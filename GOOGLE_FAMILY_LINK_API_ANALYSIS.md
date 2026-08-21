@@ -122,6 +122,19 @@ Where `[start_h, …]` and `[end_h, …]` are today's weekly bedtime hours.
 2. Then `POST /people/{childId}/timeLimitOverrides:batchCreate` with the same body as above but `action=1`.
 
 This DELETE → CREATE pattern mirrors what the web app emits when unchecking the "Today" toggle and avoids leaving stacked, conflicting overrides on the same day.
+**Reading the school time override back (today-effective state), issue #140.** Exactly as for bedtime above, the daily override is echoed in the `GET .../timeLimit` response and is the only reliable source for "is school time on today?". The shape differs in one decisive way:
+
+```
+[override_uuid, ts, 9, '', '', None,None,None, profile_id, None,None,None,
+ [action, [startH,startM], [endH,endM], null, [iso_weekday, rule_uuid]]]
+```
+
+- Both bedtime and school time overrides use `item[2] == 9`. What tells them apart is the **payload shape**: bedtime ends with a `CAEQxx` **day-code string** at `payload[3]` (4 elements), school time carries a `[iso_weekday, rule_uuid]` **list** at `payload[4]` (5 elements).
+- Consequence: a reader that filters on `payload[3].startswith("CAEQ")`, as the bedtime resolver does, can **never** match a school time override. This is why the #113 today-effective fix did not extend to school time and had to be implemented separately (`_parse_schooltime_overrides`).
+- Resolution rule is identical: among all overrides matching today's `iso_weekday` **and** the school time `rule_uuid`, the one with the largest `item[1]` timestamp wins. `async_get_time_limit` returns this as `school_time_enabled_today`, and the coordinator prefers it over the `appliedTimeLimits`-derived value.
+
+> **`appliedTimeLimits` answers a different question.** Its window scan sets `schooltime_enabled_today` as soon as a school time window exists for today in the weekly policy. That means *"a school time window is **scheduled** today"*, **not** *"school time is enabled"*. On its own it therefore springs back to ON after a "today only" OFF override, and appears to "turn itself on" at the window's start hour. The integration keeps it under the separate name `school_time_scheduled_today` (exposed as a switch attribute) precisely to keep the two questions apart.
+
 
 ### Day Codes (CAEQ* - for daily limit)
 The `day_code` in the daily limit payload encodes the day of the week. **You MUST use the code corresponding to the current day** for the change to take effect immediately.

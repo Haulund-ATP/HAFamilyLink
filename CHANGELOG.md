@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **School time switch no longer springs back ON after being turned off (issue #140).** Turning school time off in Home Assistant posted a correct `action=1` daily override, but nothing ever read it back, so the next refresh returned the switch to ON and it looked like Home Assistant and the Family Link app had drifted apart. The today-effective override resolution added for bedtime in #113 could not cover school time: both override types share `item[2] == 9`, but bedtime ends with a `CAEQxx` day-code **string** while school time carries a `[weekday, rule_uuid]` **list**, so the bedtime reader's `startswith("CAEQ")` filter structurally never matched one. `async_get_time_limit` now resolves school time overrides through a dedicated parser (most recent by timestamp wins, since Google appends rather than replaces) and returns `school_time_enabled_today`, which the coordinator prefers over the `appliedTimeLimits` value, exactly mirroring the bedtime path. Reported by @Piepke82 (#140).
+- **School time no longer appears to "turn itself on" at the start of the school window (issue #140).** `appliedTimeLimits` sets its school time flag as soon as a window exists for today, which means *"a school time window is **scheduled** today"*, not *"school time is enabled"*. Used alone it flipped the switch to ON at the window's start hour regardless of any override. That value is now kept separately as `school_time_scheduled_today` and no longer decides the switch state on its own.
+
+### Added
+- **Diagnostic attributes on the school time switch (issue #140).** The switch now exposes `school_time_enabled_weekly` (the weekly policy toggle) and `school_time_scheduled_today` (whether today has a school time window at all) alongside its own today-effective state. A "today only" override legitimately makes these disagree, since the weekly toggle in the Family Link app stays ON when only today is turned off, so showing the three together makes an apparent desync self-explanatory instead of looking like a bug.
+
+### Changed
+- **Failure to read existing school time overrides is now logged as a warning.** `_async_list_schooltime_overrides_today` previously swallowed fetch failures at DEBUG level and returned an empty list, silently skipping the DELETE-before-CREATE cleanup and allowing stacked, conflicting overrides to accumulate on the same day. The fetch/unwrap step is now shared with the state reader (`_async_fetch_time_limit_data`) and logs at WARNING when it cannot read them.
+
+---
+
 ## Add-on / auth container [1.8.0] - 2026-07-24
 
 ### Fixed

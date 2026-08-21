@@ -220,18 +220,21 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 			# "Only today" override Google actually applies — and takes
 			# precedence over the appliedTimeLimits heuristic below.
 			bedtime_enabled_today_from_rules = None
+			school_time_enabled_today_from_rules = None
 
 			try:
 				time_limit_config = await self.client.async_get_time_limit(account_id=child_id)
 				bedtime_enabled = time_limit_config.get("bedtime_enabled")
 				school_time_enabled = time_limit_config.get("school_time_enabled")
 				bedtime_enabled_today_from_rules = time_limit_config.get("bedtime_enabled_today")
+				school_time_enabled_today_from_rules = time_limit_config.get("school_time_enabled_today")
 				bedtime_schedule = time_limit_config.get("bedtime_schedule")
 				school_time_schedule = time_limit_config.get("school_time_schedule")
 				_LOGGER.debug(
 					f"Fetched time limit config for {child_name}: "
 					f"bedtime={bedtime_enabled}, bedtime_today={bedtime_enabled_today_from_rules}, "
-					f"school_time={school_time_enabled}"
+					f"school_time={school_time_enabled}, "
+					f"school_time_today={school_time_enabled_today_from_rules}"
 				)
 			except SessionExpiredError:
 				raise  # Re-raise to trigger auth notification
@@ -244,6 +247,7 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 							bedtime_enabled = cached_child.get("bedtime_enabled")
 							school_time_enabled = cached_child.get("school_time_enabled")
 							bedtime_enabled_today_from_rules = cached_child.get("bedtime_enabled_today")
+							school_time_enabled_today_from_rules = cached_child.get("school_time_enabled_today")
 							bedtime_schedule = cached_child.get("bedtime_schedule")
 							school_time_schedule = cached_child.get("school_time_schedule")
 							_LOGGER.debug(f"Using cached time limit config for {child_name}")
@@ -292,6 +296,20 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 			# "Only today" OFF override leaves no enabled window to detect).
 			if bedtime_enabled_today_from_rules is not None:
 				bedtime_enabled_today = bedtime_enabled_today_from_rules
+
+			# Same for school time (issue #140). School time overrides are keyed
+			# by [weekday, rule_uuid] rather than a day code, so they are read by
+			# a dedicated parser, but the precedence rule is identical: an
+			# explicit override for today beats the appliedTimeLimits window
+			# scan, which only tells us a school time window is SCHEDULED today,
+			# not whether it is actually enabled.
+			#
+			# The raw appliedTimeLimits value is kept as
+			# school_time_scheduled_today and exposed as a switch attribute, so
+			# a "scheduled but overridden off" day is visible without a debug log.
+			school_time_scheduled_today = schooltime_enabled_today
+			if school_time_enabled_today_from_rules is not None:
+				schooltime_enabled_today = school_time_enabled_today_from_rules
 
 			# Update device cache with real lock states from API
 			current_time = time.time()
@@ -409,6 +427,9 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 				# weekly-only revisions above.
 				"bedtime_enabled_today": bedtime_enabled_today,
 				"school_time_enabled_today": schooltime_enabled_today,
+				# Whether a school time window exists in today's weekly policy,
+				# independent of any "today only" override (issue #140).
+				"school_time_scheduled_today": school_time_scheduled_today,
 				"bedtime_schedule": bedtime_schedule,
 				"school_time_schedule": school_time_schedule,
 				"daily_limit_enabled": daily_limit_enabled,
