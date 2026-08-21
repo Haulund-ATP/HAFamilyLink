@@ -52,7 +52,7 @@
 			"invalid_auth": "Aucun cookie trouvé. Veuillez d'abord vous authentifier via le module complémentaire ou le conteneur Family Link Auth.",
 			"url_required": "L'URL est requise",
 			"no_cookies": "Le serveur est accessible mais aucun cookie n'a été trouvé. Veuillez d'abord vous authentifier via l'interface web.",
-			"invalid_api_key": "Le serveur exige une clé API. Ajoutez ?api_key=<clé> à l'URL — la clé se trouve dans le fichier « api_key » du répertoire de données du conteneur d'authentification (ex. ./data/api_key).",
+			"invalid_api_key": "Le serveur exige une clé API. Ajoutez ?api_key=<clé> à l'URL, où <clé> est la valeur de la variable d'environnement API_KEY définie sur le conteneur d'authentification.",
 			"unknown": "Une erreur inattendue s'est produite"
 		},
 		"abort": {

@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Time bonuses are now verified after creation (issue #141)** - Google acknowledges a bonus `timeLimitOverrides:batchCreate` with HTTP 200 even when the override never takes effect on the target device (reported on ChromeOS: the device unlocks but the Family Link app shows no active bonus and no countdown). The client now logs the batchCreate response body, then polls `appliedTimeLimits` (after 3s, then 5 more) to check the override is actually visible, logging a warning when it is not instead of reporting an unconditional success. Purely diagnostic: behavior is unchanged, but silent half-failures now leave a trace that makes reports like #141 diagnosable.
+
+### Fixed
+- **Config flow "invalid API key" message no longer points at a file that does not exist** - The error string (all languages) told the user to look for the key in the auth container's `./data/api_key` file. Since add-on 1.7.1 no key is generated in standalone mode: the endpoint is only protected when the `API_KEY` environment variable is set explicitly, so the message now points at that variable's value.
+
+---
+
 ## [1.2.13] - 2026-08-21
 
 ### Fixed
