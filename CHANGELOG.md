@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [1.2.13] - 2026-08-21
 
 ### Fixed
 - **School time switch no longer springs back ON after being turned off (issue #140).** Turning school time off in Home Assistant posted a correct `action=1` daily override, but nothing ever read it back, so the next refresh returned the switch to ON and it looked like Home Assistant and the Family Link app had drifted apart. The today-effective override resolution added for bedtime in #113 could not cover school time: both override types share `item[2] == 9`, but bedtime ends with a `CAEQxx` day-code **string** while school time carries a `[weekday, rule_uuid]` **list**, so the bedtime reader's `startswith("CAEQ")` filter structurally never matched one. `async_get_time_limit` now resolves school time overrides through a dedicated parser (most recent by timestamp wins, since Google appends rather than replaces) and returns `school_time_enabled_today`, which the coordinator prefers over the `appliedTimeLimits` value, exactly mirroring the bedtime path. Reported by @Piepke82 (#140).
