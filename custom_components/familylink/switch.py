@@ -427,6 +427,29 @@ class FamilyLinkSchoolTimeSwitch(CoordinatorEntity, SwitchEntity):
 		return self.coordinator.last_update_success
 
 	@property
+	def extra_state_attributes(self) -> dict[str, Any]:
+		"""Expose why the switch is in its current state (issue #140).
+
+		`school_time_scheduled_today` says a school time window exists in the
+		weekly policy for today; `school_time_enabled` is the weekly toggle.
+		The switch itself shows the today-effective state, which a "today only"
+		override can flip away from both, so surfacing the three side by side
+		makes an apparent desync self-explanatory.
+		"""
+		attributes: dict[str, Any] = {}
+		if self.coordinator.data and "children_data" in self.coordinator.data:
+			for child_data in self.coordinator.data["children_data"]:
+				if child_data["child_id"] == self._child_id:
+					attributes["school_time_enabled_weekly"] = child_data.get(
+						"school_time_enabled"
+					)
+					attributes["school_time_scheduled_today"] = child_data.get(
+						"school_time_scheduled_today"
+					)
+					break
+		return attributes
+
+	@property
 	def icon(self) -> str:
 		"""Return the icon for the switch."""
 		return "mdi:school" if self.is_on else "mdi:school-outline"

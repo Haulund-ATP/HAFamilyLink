@@ -1967,15 +1967,64 @@ class FamilyLinkClient:
 			_LOGGER.error("Unexpected error applying school time override: %s", err)
 			return False
 
-	async def _async_list_schooltime_overrides_today(
-		self, account_id: str, rule_id: str, weekday: int
-	) -> list[str]:
-		"""Return UUIDs of existing schooltime overrides for today.
+	@staticmethod
+	def _parse_schooltime_overrides(
+		data: Any, rule_id: str, weekday: int
+	) -> list[tuple[str, int, int]]:
+		"""Extract today's schooltime overrides from an unwrapped timeLimit payload.
 
-		Reads the time limit endpoint and extracts override entries whose
-		payload references the schooltime rule and the current weekday. Used
-		before posting a new override to avoid stacking.
+		Returns a list of ``(uuid, timestamp_ms, action)`` tuples for every
+		type-9 override that references ``rule_id`` on ``weekday``
+		(action 2 = school time ON, 1 = OFF).
+
+		``data`` is the already-unwrapped ``response_data[1]`` of a
+		``people/{id}/timeLimit`` response. Override entries look like:
+		  [uuid, ts, 9, "", "", null, null, null, account_id, null, null, null,
+		   [action, [start_h, m], [end_h, m], null, [weekday, rule_uuid]]]
+
+		Unlike bedtime overrides, which are keyed by an opaque ``CAEQxx`` day
+		code (see `_DAY_CODES`), school time overrides carry an explicit
+		``[weekday, rule_uuid]`` reference at ``payload[4]``. That difference is
+		why the bedtime reader (which filters on ``startswith("CAEQ")``) can
+		never match a school time override, and why issue #113's today-effective
+		fix had to be duplicated here rather than reused as-is (issue #140).
 		"""
+		matches: list[tuple[str, int, int]] = []
+		if not isinstance(data, list):
+			return matches
+
+		for element in data:
+			if not isinstance(element, list):
+				continue
+			for item in element:
+				if not isinstance(item, list) or len(item) < 13:
+					continue
+				if not isinstance(item[0], str):
+					continue
+				if item[2] != 9:
+					continue
+				payload = item[12]
+				if not isinstance(payload, list) or len(payload) < 5:
+					continue
+				rule_ref = payload[4]
+				if not isinstance(rule_ref, list) or len(rule_ref) < 2:
+					continue
+				if rule_ref[0] != weekday or rule_ref[1] != rule_id:
+					continue
+				action = payload[0]
+				if action not in (1, 2):
+					continue
+				# Override timestamp at item[1] (epoch ms as a string).
+				try:
+					ts = int(item[1])
+				except (TypeError, ValueError):
+					ts = -1
+				matches.append((item[0], ts, action))
+
+		return matches
+
+	async def _async_fetch_time_limit_data(self, account_id: str) -> Any | None:
+		"""Fetch and unwrap the raw timeLimit payload, or None on failure."""
 		try:
 			session = await self._get_session()
 			cookie_header = self._get_cookie_header()
@@ -1995,44 +2044,42 @@ class FamilyLinkClient:
 				},
 			) as response:
 				if response.status != 200:
-					_LOGGER.debug(
-						"Could not fetch overrides (HTTP %s) — skipping cleanup",
+					_LOGGER.warning(
+						"Could not fetch time limit overrides (HTTP %s)",
 						response.status,
 					)
-					return []
-				data = await response.json()
+					return None
+				response_data = await response.json()
 		except Exception as err:
-			_LOGGER.debug("Failed to list school time overrides: %s", err)
+			_LOGGER.warning("Failed to fetch time limit overrides: %s", err)
+			return None
+
+		# Unwrap the response: [[metadata], [real_data]] -> real_data
+		if not isinstance(response_data, list) or len(response_data) < 2:
+			return None
+		return response_data[1]
+
+	async def _async_list_schooltime_overrides_today(
+		self, account_id: str, rule_id: str, weekday: int
+	) -> list[str]:
+		"""Return UUIDs of existing schooltime overrides for today.
+
+		Reads the time limit endpoint and extracts override entries whose
+		payload references the schooltime rule and the current weekday. Used
+		before posting a new override to avoid stacking.
+		"""
+		data = await self._async_fetch_time_limit_data(account_id)
+		if data is None:
+			_LOGGER.warning(
+				"Skipping school time override cleanup: could not read existing "
+				"overrides; a stale override may keep arbitrating today"
+			)
 			return []
 
-		# Unwrapped structure: data[1] holds the payload. Override entries
-		# look like:
-		# [uuid, ts, 9, "", "", null, null, null, account_id, null, null, null,
-		#  [action, [start_h, m], [end_h, m], null, [weekday, rule_uuid]]]
-		matches: list[str] = []
-		if not isinstance(data, list) or len(data) < 2:
-			return matches
-		inner = data[1]
-		if not isinstance(inner, list):
-			return matches
-
-		for element in inner:
-			if not isinstance(element, list):
-				continue
-			for item in element:
-				if not isinstance(item, list) or len(item) < 13:
-					continue
-				if not isinstance(item[0], str):
-					continue
-				payload = item[12]
-				if not isinstance(payload, list) or len(payload) < 5:
-					continue
-				rule_ref = payload[4]
-				if not isinstance(rule_ref, list) or len(rule_ref) < 2:
-					continue
-				if rule_ref[0] != weekday or rule_ref[1] != rule_id:
-					continue
-				matches.append(item[0])
+		matches = [
+			uuid for uuid, _ts, _action
+			in self._parse_schooltime_overrides(data, rule_id, weekday)
+		]
 
 		if matches:
 			_LOGGER.debug(
@@ -2582,6 +2629,7 @@ class FamilyLinkClient:
 						"bedtime_enabled": False,
 						"school_time_enabled": False,
 						"bedtime_enabled_today": None,
+						"school_time_enabled_today": None,
 						"bedtime_schedule": [],
 						"school_time_schedule": [],
 						"bedtime_rule_id": None,
@@ -2598,6 +2646,7 @@ class FamilyLinkClient:
 						"bedtime_enabled": False,
 						"school_time_enabled": False,
 						"bedtime_enabled_today": None,
+						"school_time_enabled_today": None,
 						"bedtime_schedule": [],
 						"school_time_schedule": [],
 						"bedtime_rule_id": None,
@@ -2780,10 +2829,44 @@ class FamilyLinkClient:
 							f"(weekly was {bedtime_enabled})"
 						)
 
+				# Today-effective SCHOOL TIME state (issue #140).
+				#
+				# Same mechanism as bedtime above, but school time overrides are
+				# shaped differently: they carry an explicit [weekday, rule_uuid]
+				# reference instead of a CAEQxx day code, so the bedtime loop
+				# above can never match them. Without this, turning school time
+				# off in HA posted a valid action=1 override that was never read
+				# back, and the switch kept deriving its state from the weekly
+				# window in appliedTimeLimits and sprang back to ON on the next
+				# refresh.
+				#
+				# Overrides ACCUMULATE (Google appends rather than replaces), so
+				# the effective one is the most recent by timestamp, exactly as
+				# for bedtime.
+				school_time_enabled_today = school_time_enabled
+				if schooltime_rule_id:
+					weekday = dt_util.now().isoweekday()
+					overrides = self._parse_schooltime_overrides(
+						data, schooltime_rule_id, weekday
+					)
+					if overrides:
+						_uuid, latest_ts, latest_action = max(
+							overrides, key=lambda o: o[1]
+						)
+						school_time_enabled_today = (latest_action == 2)
+						_LOGGER.debug(
+							f"Most recent school time override for today "
+							f"(weekday={weekday}, ts={latest_ts}): "
+							f"action={latest_action} -> "
+							f"school_time_enabled_today={school_time_enabled_today} "
+							f"(weekly was {school_time_enabled})"
+						)
+
 				_LOGGER.info(
 					f"Time limit rules: bedtime_enabled={bedtime_enabled} (rule_id={bedtime_rule_id}, {len(bedtime_schedule)} schedules), "
 					f"bedtime_enabled_today={bedtime_enabled_today}, "
-					f"school_time_enabled={school_time_enabled} (rule_id={schooltime_rule_id}, {len(school_time_schedule)} schedules)"
+					f"school_time_enabled={school_time_enabled} (rule_id={schooltime_rule_id}, {len(school_time_schedule)} schedules), "
+					f"school_time_enabled_today={school_time_enabled_today}"
 				)
 
 				return {
@@ -2793,6 +2876,8 @@ class FamilyLinkClient:
 					# override if one exists for today (issue #113). Falls back to
 					# the weekly value when no override is posted for today.
 					"bedtime_enabled_today": bedtime_enabled_today,
+					# Same, for school time (issue #140).
+					"school_time_enabled_today": school_time_enabled_today,
 					"bedtime_schedule": bedtime_schedule,
 					"school_time_schedule": school_time_schedule,
 					"bedtime_rule_id": bedtime_rule_id,
