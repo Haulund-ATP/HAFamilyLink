@@ -23,9 +23,10 @@ services:
       - VNC_PASSWORD=familylink
       - LANGUAGE=en-US
       - TIMEZONE=Europe/Paris
-      # Optional: force the key protecting /api/cookies. If unset, a key is
-      # auto-generated on first start in ./data/api_key. The HA integration
-      # must use: http://<host>:8099?api_key=<key>
+      # Recommended: protect /api/cookies with a key. In standalone mode no key
+      # is auto-generated: if unset, the endpoint stays open (a warning is
+      # logged at startup). If set, point the HA integration at:
+      # http://<host>:8099?api_key=<key>
       # - API_KEY=change-me
     dns:
       - 8.8.8.8

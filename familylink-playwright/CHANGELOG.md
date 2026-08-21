@@ -2,6 +2,16 @@
 
 All notable changes to the Google Family Link Auth Add-on will be documented in this file.
 
+## [1.8.0] - 2026-07-24
+
+### Fixed
+- **noVNC no longer hangs on "Connecting..." forever (#136).** The display stack (Xvfb, fluxbox, x11vnc, websockify) used to start with all output discarded and no liveness check, so any failure was invisible: the container looked healthy while noVNC never rendered. Each display process now logs to `/var/log/familylink/<proc>.log` (journald in add-on mode), is re-checked after launch, and dumps its last log lines on failure.
+- **Stale X99 state is cleaned on start.** A non-graceful stop left `/tmp/.X11-unix/X99` and `/tmp/.X99-lock` behind, which silently prevented the display server from binding on the next start. Both are removed before startup.
+- **VNC password length.** VNC authentication only uses the first 8 characters of the password. The password is now truncated explicitly with a warning, and the web UI auto-connect URL embeds the same 8-character value so client and server agree.
+
+### Changed
+- **TigerVNC is now the default display backend**, with automatic fallback to the legacy Xvfb + x11vnc stack. TigerVNC's Xvnc serves VNC natively, removing the x11vnc screen scraper that crashed the moment a client connected. Force a backend with `FAMILYLINK_VNC_BACKEND=tigervnc|x11vnc`.
+
 ## [1.7.1] - 2026-06-15
 
 ### Fixed
