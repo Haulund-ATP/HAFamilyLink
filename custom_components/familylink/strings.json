@@ -52,7 +52,7 @@
 			"invalid_auth": "No cookies found. Please authenticate first using the Family Link Auth add-on or container.",
 			"url_required": "URL is required",
 			"no_cookies": "Server is reachable but no cookies found. Please authenticate first via the web interface.",
-			"invalid_api_key": "The server requires an API key. Append ?api_key=<key> to the URL — the key is in the 'api_key' file of the auth container's data directory (e.g. ./data/api_key).",
+			"invalid_api_key": "The server requires an API key. Append ?api_key=<key> to the URL, where <key> is the value of the API_KEY environment variable set on the auth container.",
 			"unknown": "Unexpected error occurred"
 		},
 		"abort": {

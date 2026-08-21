@@ -1599,17 +1599,62 @@ class FamilyLinkClient:
 				},
 				data=payload
 			) as response:
+				response_text = await response.text()
 				if response.status != 200:
-					response_text = await response.text()
 					_LOGGER.error(f"Failed to add time bonus {response.status}: {response_text}")
 					return False
 
-				_LOGGER.info(f"Successfully added {bonus_minutes} minutes time bonus to device {device_id}")
+				# Google acknowledges the batchCreate with HTTP 200 even when the
+				# override never takes effect on the target device (reported on
+				# ChromeOS, issue #141), so a 200 alone is not proof of success.
+				_LOGGER.debug(
+					f"Time bonus batchCreate response for device {device_id}: "
+					f"{response_text[:300]}"
+				)
+				_LOGGER.info(
+					f"Time bonus of {bonus_minutes} minutes accepted by Google for "
+					f"device {device_id}, verifying it was applied"
+				)
+				await self._async_verify_bonus_applied(account_id, device_id)
 				return True
 
 		except Exception as err:
 			_LOGGER.error(f"Unexpected error adding time bonus: {err}")
 			return False
+
+	async def _async_verify_bonus_applied(self, account_id: str, device_id: str) -> None:
+		"""Check that a just-created time bonus is visible in appliedTimeLimits (issue #141).
+
+		Reading the bonus back is the only way to distinguish "applied" from
+		"accepted but inert": Google returns HTTP 200 in both cases. The
+		override needs a moment to propagate, so the applied state is polled
+		twice (after 3s, then after 5 more) before concluding. Purely
+		diagnostic: the caller has already reported success either way, this
+		only logs the outcome so silent half-failures become visible.
+		"""
+		try:
+			for delay in (3, 5):
+				await asyncio.sleep(delay)
+				applied = await self.async_get_applied_time_limits(account_id)
+				device_data = (applied or {}).get("devices", {}).get(device_id, {})
+				override_id = device_data.get("bonus_override_id")
+				if override_id:
+					_LOGGER.info(
+						f"Time bonus verified for device {device_id}: override "
+						f"{override_id}, {device_data.get('bonus_minutes', 0)} min "
+						f"visible in applied time limits"
+					)
+					return
+			_LOGGER.warning(
+				f"Time bonus for device {device_id} was accepted by Google "
+				f"(HTTP 200) but is still not visible in applied time limits "
+				f"after two checks. The device may not honor bonus overrides "
+				f"(known behavior on ChromeOS, see issue #141): the Family Link "
+				f"app will not show an active bonus and the reset-bonus button "
+				f"in Home Assistant will stay unavailable"
+			)
+		except Exception as err:
+			_LOGGER.debug(f"Could not verify time bonus application: {err}")
 
 	async def async_cancel_time_bonus(
 		self,
@@ -1647,11 +1692,15 @@ class FamilyLinkClient:
 					"Cookie": cookie_header
 				}
 			) as response:
+				response_text = await response.text()
 				if response.status != 200:
-					response_text = await response.text()
 					_LOGGER.error(f"Failed to cancel time bonus {response.status}: {response_text}")
 					return False
 
+				_LOGGER.debug(
+					f"Time bonus delete response for override {override_id}: "
+					f"{response_text[:300]}"
+				)
 				_LOGGER.info(f"Successfully cancelled time bonus override {override_id}")
 				return True
 
