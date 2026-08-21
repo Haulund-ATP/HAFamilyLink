@@ -11,7 +11,7 @@ After a successful login, the add-on extracts the Google session cookies, encryp
 ## Installation
 
 1. Go to **Settings > Add-ons > Add-on Store**, open the three-dot menu, choose **Repositories**, and add `https://github.com/noiwid/HAFamilyLink`.
-2. Install **Google Family Link Auth**. The image is built locally on your machine, so the install takes several minutes.
+2. Install **Google Family Link Auth**. The prebuilt image is downloaded from GHCR, so the install only takes a moment.
 3. Optionally adjust the options in the **Configuration** tab (see [Configuration](#configuration)).
 4. Start the add-on. Enabling **Start on boot** and **Watchdog** is recommended.
 

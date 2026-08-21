@@ -2,6 +2,11 @@
 
 All notable changes to the Google Family Link Auth Add-on will be documented in this file.
 
+## [1.8.1] - 2026-08-21
+
+### Changed
+- **Add-on installs now pull the prebuilt multi-arch image from GHCR instead of compiling locally.** Installing previously built the whole image (Chromium and Playwright included) on the Home Assistant machine, which took a long time on low-power hardware. The add-on now declares `image: ghcr.io/noiwid/familylink-auth`, and CI publishes that image tagged with the add-on version on every push, so the Supervisor downloads it in seconds. Local builds keep working as a fallback (`build.json` is unchanged).
+
 ## [1.8.0] - 2026-07-24
 
 ### Fixed

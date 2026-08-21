@@ -16,6 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## Add-on / auth container [1.8.1] - 2026-08-21
+
+### Changed
+- **Add-on installs now pull the prebuilt multi-arch image from GHCR instead of compiling locally.** `config.json` declares `image: ghcr.io/noiwid/familylink-auth` and CI tags the published image with the add-on version, so installing or updating the add-on downloads in seconds instead of building Chromium and Playwright on the Home Assistant machine. Local builds remain available as a fallback.
+
+---
+
 ## [1.2.13] - 2026-08-21
 
 ### Fixed
