@@ -38,6 +38,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Read add-on version from config.json
+        id: addon_version
+        run: echo "version=$(jq -r .version familylink-playwright/config.json)" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata for addon image (tags, labels)
         id: meta-addon
         uses: docker/metadata-action@v5
@@ -50,6 +54,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.addon_version.outputs.version }}
 
       - name: Extract metadata for standalone image (tags, labels)
         id: meta-standalone

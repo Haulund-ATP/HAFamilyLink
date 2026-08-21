@@ -1,9 +1,10 @@
 {
   "name": "Google Family Link Auth",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "slug": "familylink-playwright",
   "description": "Authentication service for Google Family Link integration using browser automation",
   "url": "https://github.com/noiwid/HAFamilyLink",
+  "image": "ghcr.io/noiwid/familylink-auth",
   "arch": ["amd64", "aarch64"],
   "startup": "application",
   "boot": "auto",
