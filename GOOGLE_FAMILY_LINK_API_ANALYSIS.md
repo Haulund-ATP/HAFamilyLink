@@ -73,7 +73,8 @@
 - **4**: UNLOCK device
 - **8**: SET daily limit duration (per device)
 - **9**: SET bedtime / school time schedule (per child)
-- **10**: ADD time bonus (per device)
+- **10**: ADD time bonus (per device, Android)
+- **6**: ADD time bonus (per device, **ChromeOS**) - same endpoint, different shape: duration in **milliseconds** at index `[10]` as `["<ms>"]`, and the inner array stops there (11 elements instead of 14). Captured live in issue #141: the same +30min bonus posted by the official web app is `[..., 6, deviceId, null*6, ["1800000"]]` on a Chromebook and `[..., 10, deviceId, null*9, [["1800", 0]]]` on an Android phone. Sending the Android shape to a ChromeOS device returns HTTP 200 but never takes effect (the device may unlock, yet the app shows no bonus and no countdown). No field in `appsandusage` labels the platform; the only observable discriminator is the device id length (44 chars on Android, ~91 on ChromeOS), which the client uses as a heuristic.
 
 ### Bedtime daily override pattern (issue #113)
 
@@ -231,7 +232,7 @@ Position `[0]` of each device block contains either:
 - **Lock state**: `[null, null, action_code, device_id]`
   - `action_code`: **1 = LOCKED**, **4 = UNLOCKED**
 - **Bonus override**: `[override_id, timestamp, 10, device_id, ..., [[bonus_seconds]]]`
-  - Type **10** indicates time bonus
+  - Type **10** indicates time bonus (Android); type **6** is the ChromeOS variant with milliseconds at `[10]` as `["<ms>"]` (issue #141)
   - Bonus seconds at position `[0][13][0][0]` (string format: e.g., `"1800"` for 30 minutes)
   - **IMPORTANT**: Bonus **replaces** normal daily limit time (doesn't add to it)
   - When bonus active: `remaining_time = bonus_minutes` (ignoring daily_limit - used_time)

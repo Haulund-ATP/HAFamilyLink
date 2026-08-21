@@ -1284,34 +1284,49 @@ class FamilyLinkClient:
 							"bonus_override_id": None
 						}
 
-						# Parse bonus override (device_data[0] if it exists and type == 10)
-						# Structure: [override_id, timestamp, type, device_id, ..., [[duration_seconds]]]
-						if device_data[0] and isinstance(device_data[0], list) and len(device_data[0]) > 13:
+						# Parse bonus override (device_data[0] if it exists).
+						# Two wire shapes exist (issue #141):
+						#   type 10 (Android):  duration in seconds at [13][0][0]
+						#   type 6 (ChromeOS):  duration in milliseconds at [10][0]
+						if device_data[0] and isinstance(device_data[0], list) and len(device_data[0]) > 10:
 							override_type = device_data[0][2] if len(device_data[0]) > 2 else None
-							if override_type == 10:  # Type 10 = time bonus
+							if override_type in (6, 10):
 								override_id = device_data[0][0]
 								override_device_id = device_data[0][3]
+								bonus_seconds = None
 
-								# Parse bonus duration from position [13][0][0] (seconds string)
-								if (len(device_data[0]) > 13 and
+								if (override_type == 10 and len(device_data[0]) > 13 and
 									isinstance(device_data[0][13], list) and
 									len(device_data[0][13]) > 0 and
 									isinstance(device_data[0][13][0], list) and
 									len(device_data[0][13][0]) > 0):
+									value = device_data[0][13][0][0]
+									if isinstance(value, str) and value.isdigit():
+										bonus_seconds = int(value)
+								elif (override_type == 6 and
+									isinstance(device_data[0][10], list) and
+									len(device_data[0][10]) > 0):
+									value = device_data[0][10][0]
+									if isinstance(value, str) and value.isdigit():
+										bonus_seconds = int(value) // 1000
 
-									bonus_seconds_str = device_data[0][13][0][0]
-									if isinstance(bonus_seconds_str, str) and bonus_seconds_str.isdigit():
-										bonus_seconds = int(bonus_seconds_str)
-										bonus_minutes_from_override = bonus_seconds // 60
-
-										device_info["bonus_override_id"] = override_id
-										# Store bonus minutes from override
-										device_info["bonus_minutes"] = bonus_minutes_from_override
-										_LOGGER.debug(
-											f"Device {override_device_id}: Found bonus override - "
-											f"id={override_id}, duration={bonus_minutes_from_override}min "
-											f"({bonus_seconds}s)"
-										)
+								if bonus_seconds is not None:
+									device_info["bonus_override_id"] = override_id
+									device_info["bonus_minutes"] = bonus_seconds // 60
+									_LOGGER.debug(
+										f"Device {override_device_id}: Found bonus override - "
+										f"id={override_id}, type={override_type}, "
+										f"duration={bonus_seconds // 60}min ({bonus_seconds}s)"
+									)
+								else:
+									# Unknown duration encoding: still expose the
+									# override id so cancel and verification work.
+									device_info["bonus_override_id"] = override_id
+									_LOGGER.debug(
+										f"Device {override_device_id}: bonus override "
+										f"{override_id} (type={override_type}) with "
+										f"unparsed duration"
+									)
 
 
 						# Parse time data from positions 19-20
@@ -1574,63 +1589,138 @@ class FamilyLinkClient:
 			account_id = await self.async_get_supervised_child_id()
 
 		try:
-			session = await self._get_session()
-			cookie_header = self._get_cookie_header()
-
-			# Convert minutes to seconds
+			# The bonus override has TWO wire shapes (issue #141, confirmed by
+			# capturing the official web app posting the same +30min bonus on
+			# each platform):
+			#   Android:  type 10, duration in SECONDS at index [13] as [["1800", 0]]
+			#   ChromeOS: type 6, duration in MILLISECONDS at index [10] as ["1800000"]
+			# Sending the Android shape to a ChromeOS device returns HTTP 200
+			# but the bonus never takes effect in the Family Link app.
 			bonus_seconds = bonus_minutes * 60
+			shape = "chromeos" if self._is_chromeos_device_id(device_id) else "android"
 
-			# Payload format: [null, account_id, [[null, null, 10, device_token, null, null, null, null, null, null, null, null, null, [[bonus_seconds, 0]]]], [1]]
-			payload = json.dumps([
-				None,
-				account_id,
-				[[None, None, 10, device_id, None, None, None, None, None, None, None, None, None, [[str(bonus_seconds), 0]]]],
-				[1]
-			])
-
-			url = self._people_url(account_id, "timeLimitOverrides:batchCreate")
-			_LOGGER.debug(f"Adding {bonus_minutes} minutes time bonus to device {device_id}")
-
-			async with session.post(
-				url,
-				headers={
-					"Content-Type": "application/json+protobuf",
-					"Cookie": cookie_header
-				},
-				data=payload
-			) as response:
-				response_text = await response.text()
-				if response.status != 200:
-					_LOGGER.error(f"Failed to add time bonus {response.status}: {response_text}")
-					return False
-
-				# Google acknowledges the batchCreate with HTTP 200 even when the
-				# override never takes effect on the target device (reported on
-				# ChromeOS, issue #141), so a 200 alone is not proof of success.
-				_LOGGER.debug(
-					f"Time bonus batchCreate response for device {device_id}: "
-					f"{response_text[:300]}"
-				)
-				_LOGGER.info(
-					f"Time bonus of {bonus_minutes} minutes accepted by Google for "
-					f"device {device_id}, verifying it was applied"
-				)
-				await self._async_verify_bonus_applied(account_id, device_id)
+			ok, response_text = await self._async_post_bonus_override(
+				account_id, device_id, bonus_seconds, shape
+			)
+			if not ok:
+				return False
+			_LOGGER.info(
+				f"Time bonus of {bonus_minutes} minutes ({shape} shape) accepted "
+				f"by Google for device {device_id}, verifying it was applied"
+			)
+			if await self._async_verify_bonus_applied(account_id, device_id):
 				return True
+
+			if shape == "chromeos":
+				# The type-6 shape comes from a single live capture; if it did
+				# not take, fall back to the legacy type-10 shape so the device
+				# at least unlocks (pre-fix behavior). Best-effort cleanup of
+				# the inert override first, when its id can be recovered from
+				# the batchCreate echo.
+				created = re.search(
+					r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+					response_text or "",
+				)
+				if created:
+					await self._async_delete_time_limit_override(
+						account_id, created.group(0)
+					)
+				_LOGGER.warning(
+					f"ChromeOS-shape bonus not visible for device {device_id}, "
+					f"retrying with the legacy Android shape"
+				)
+				ok, _ = await self._async_post_bonus_override(
+					account_id, device_id, bonus_seconds, "android"
+				)
+				if not ok:
+					return False
+				await self._async_verify_bonus_applied(account_id, device_id)
+			return True
 
 		except Exception as err:
 			_LOGGER.error(f"Unexpected error adding time bonus: {err}")
 			return False
 
-	async def _async_verify_bonus_applied(self, account_id: str, device_id: str) -> None:
+	# ChromeOS device ids observed in the wild are much longer (91 chars) than
+	# Android ones (44). Nothing in the appsandusage response labels the
+	# platform, so id length is the discriminator until a better one is found
+	# (issue #141).
+	_CHROMEOS_DEVICE_ID_MIN_LEN = 60
+
+	@classmethod
+	def _is_chromeos_device_id(cls, device_id: str) -> bool:
+		"""Heuristic: does this device id belong to a ChromeOS device?"""
+		return len(device_id) >= cls._CHROMEOS_DEVICE_ID_MIN_LEN
+
+	@staticmethod
+	def _build_bonus_override(shape: str, device_id: str, bonus_seconds: int) -> list:
+		"""Build the inner override array for a time bonus in the given wire shape."""
+		if shape == "chromeos":
+			return [
+				None, None, 6, device_id,
+				None, None, None, None, None, None,
+				[str(bonus_seconds * 1000)],
+			]
+		return [
+			None, None, 10, device_id,
+			None, None, None, None, None, None, None, None, None,
+			[[str(bonus_seconds), 0]],
+		]
+
+	async def _async_post_bonus_override(
+		self, account_id: str, device_id: str, bonus_seconds: int, shape: str
+	) -> tuple[bool, str]:
+		"""POST one bonus override in the given wire shape ("android" or "chromeos").
+
+		Returns (ok, response_body). See async_add_time_bonus for the shapes.
+		"""
+		session = await self._get_session()
+		cookie_header = self._get_cookie_header()
+
+		payload = json.dumps([
+			None,
+			account_id,
+			[self._build_bonus_override(shape, device_id, bonus_seconds)],
+			[1]
+		])
+
+		url = self._people_url(account_id, "timeLimitOverrides:batchCreate")
+		_LOGGER.debug(
+			f"Posting {shape}-shape time bonus ({bonus_seconds}s) to device {device_id}"
+		)
+
+		async with session.post(
+			url,
+			headers={
+				"Content-Type": "application/json+protobuf",
+				"Cookie": cookie_header
+			},
+			data=payload
+		) as response:
+			response_text = await response.text()
+			if response.status != 200:
+				_LOGGER.error(f"Failed to add time bonus {response.status}: {response_text}")
+				return False, response_text
+
+			# Google acknowledges the batchCreate with HTTP 200 even when the
+			# override never takes effect on the target device (issue #141),
+			# so a 200 alone is not proof of success.
+			_LOGGER.debug(
+				f"Time bonus batchCreate response for device {device_id}: "
+				f"{response_text[:300]}"
+			)
+			return True, response_text
+
+	async def _async_verify_bonus_applied(self, account_id: str, device_id: str) -> bool:
 		"""Check that a just-created time bonus is visible in appliedTimeLimits (issue #141).
 
 		Reading the bonus back is the only way to distinguish "applied" from
 		"accepted but inert": Google returns HTTP 200 in both cases. The
 		override needs a moment to propagate, so the applied state is polled
-		twice (after 3s, then after 5 more) before concluding. Purely
-		diagnostic: the caller has already reported success either way, this
-		only logs the outcome so silent half-failures become visible.
+		twice (after 3s, then after 5 more) before concluding. Returns True
+		when the override is visible (or when verification itself errored, to
+		avoid acting on an unknown state), False when it is confirmed absent,
+		which lets the caller fall back to the other wire shape.
 		"""
 		try:
 			for delay in (3, 5):
@@ -1644,17 +1734,17 @@ class FamilyLinkClient:
 						f"{override_id}, {device_data.get('bonus_minutes', 0)} min "
 						f"visible in applied time limits"
 					)
-					return
+					return True
 			_LOGGER.warning(
 				f"Time bonus for device {device_id} was accepted by Google "
 				f"(HTTP 200) but is still not visible in applied time limits "
-				f"after two checks. The device may not honor bonus overrides "
-				f"(known behavior on ChromeOS, see issue #141): the Family Link "
-				f"app will not show an active bonus and the reset-bonus button "
-				f"in Home Assistant will stay unavailable"
+				f"after two checks: the device did not apply this override "
+				f"shape (issue #141)"
 			)
+			return False
 		except Exception as err:
 			_LOGGER.debug(f"Could not verify time bonus application: {err}")
+			return True
 
 	async def async_cancel_time_bonus(
 		self,
