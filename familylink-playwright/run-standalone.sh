@@ -32,14 +32,15 @@ mkdir -p /share/familylink
 chmod 700 /share/familylink
 echo "✓ Shared storage ready at /share/familylink"
 
-# The cookie endpoint (/api/cookies) always requires an API key. It is
-# auto-generated on first start unless the API_KEY env variable is set.
+# In standalone mode /api/cookies is protected only when the API_KEY env
+# variable is set; no key is auto-generated (app/main.py logs a warning).
 if [ -n "${API_KEY:-}" ]; then
     echo "✓ Cookie API key: provided via API_KEY environment variable"
+    echo "  Configure the HA integration with: http://<this-host>:8099?api_key=<key>"
 else
-    echo "ℹ Cookie API key: auto-generated in /share/familylink/api_key (./data/api_key on the host)"
+    echo "⚠ Cookie API key: not set. /api/cookies is open; set API_KEY to protect it."
+    echo "  Configure the HA integration with: http://<this-host>:8099"
 fi
-echo "  Configure the HA integration with: http://<this-host>:8099?api_key=<key>"
 
 # Start D-Bus system bus if not available (fixes blank screen on RPi4/ARM64)
 if [ ! -S /run/dbus/system_bus_socket ]; then
@@ -53,7 +54,7 @@ fi
 # instead of vanishing into /dev/null (issue #136). Each process is also
 # re-checked after a short delay: kill -0 right after launch only catches an
 # instant failure, and x11vnc's known crash happens later, when a VNC client
-# first connects — so we still tail the log on that path.
+# first connects, so we still tail the log on that path.
 LOG_DIR="/var/log/familylink"
 mkdir -p "${LOG_DIR}"
 
@@ -79,13 +80,13 @@ export DISPLAY=:99
 
 # The display server is started in one of two ways (issue #136):
 #
-#   1. TigerVNC's Xvnc — an X server that speaks the RFB (VNC) protocol
+#   1. TigerVNC's Xvnc: an X server that speaks the RFB (VNC) protocol
 #      natively. fluxbox and Chromium render straight into it; websockify
 #      bridges it to noVNC. There is no Xvfb and no x11vnc screen-scraper, which
 #      removes the exact component that crashed on client-connect (x11vnc 0.9.16
 #      dropping its X connection). This is the preferred path.
 #
-#   2. Legacy Xvfb + x11vnc — kept as an automatic fallback for environments
+#   2. Legacy Xvfb + x11vnc: kept as an automatic fallback for environments
 #      where Xvnc is unavailable or fails to start, so we degrade instead of
 #      losing VNC entirely.
 #
@@ -139,7 +140,7 @@ start_xvfb_x11vnc() {
     XVFB_PID=$!
     sleep 2
     if ! kill -0 "${XVFB_PID}" 2>/dev/null; then
-        echo "⚠ Xvfb failed to start — VNC will be unavailable. Last log lines:"
+        echo "⚠ Xvfb failed to start, VNC will be unavailable. Last log lines:"
         tail -n 20 "${LOG_DIR}/xvfb.log" 2>/dev/null | sed 's/^/    xvfb| /'
         return 1
     fi
@@ -157,7 +158,7 @@ start_xvfb_x11vnc() {
     VNC_PID=$!
     sleep 1
     if ! kill -0 "${VNC_PID}" 2>/dev/null; then
-        echo "⚠ x11vnc failed to start — noVNC will not be available. Last log lines:"
+        echo "⚠ x11vnc failed to start, noVNC will not be available. Last log lines:"
         tail -n 20 "${LOG_DIR}/x11vnc.log" 2>/dev/null | sed 's/^/    x11vnc| /'
         return 1
     fi
@@ -180,7 +181,7 @@ else
 fi
 
 if [ -z "${DISPLAY_STARTED}" ]; then
-    echo "⚠ No display server could be started — noVNC will not be available."
+    echo "⚠ No display server could be started, noVNC will not be available."
 fi
 
 # Start window manager on whichever display server came up

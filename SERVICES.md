@@ -1,561 +1,268 @@
-# Google Family Link Services
+# Service Reference
 
-This integration provides several services to control supervised devices: app management, time limits, and bedtime schedules.
+The integration registers 16 services under the `familylink` domain. They call unofficial, reverse engineered Google endpoints, so any service can stop working without notice if Google changes something.
 
-## 📱 App Management Services
+For installation see [INSTALL.md](INSTALL.md). For the entity catalog see the [README](README.md).
 
-### 1. `familylink.block_device_for_school`
-Blocks all apps except essential ones to simulate a device lock during school hours.
+## Targeting
 
-**Essential apps (always allowed by default):**
-- Phone (`com.android.dialer`)
-- Contacts (`com.android.contacts`)
-- SMS/Messages (`com.android.mms`, `com.google.android.apps.messaging`)
-- Settings (`com.android.settings`)
-- Clock/Alarm (`com.android.deskclock`)
-- Google Maps (`com.google.android.apps.maps`)
-- Emergency (`com.android.emergency`)
-- Essential system services
+Most services accept three optional targeting fields:
 
-**Parameters:**
-- `whitelist` (optional): List of additional apps to allow
+| Field | What it is | Where to find it |
+|---|---|---|
+| `entity_id` | Any Family Link entity. The integration reads the `device_id` and `child_id` **attributes** of that entity, not the entity itself | Per-child sensors (e.g. `sensor.<child>_daily_screen_time`) carry `child_id`; the device switch (`switch.<device>`) and every per-device sensor and binary sensor carry both `device_id` and `child_id` |
+| `child_id` | The child's Google user ID | `child_id` attribute of any per-child sensor, or `user_id` on `sensor.<child>_child_info` |
+| `device_id` | The device token | `device_id` attribute of the device switch (the simplest source) or of any per-device sensor or binary sensor |
 
-**Example:**
+Manual `child_id` / `device_id` values take precedence over IDs extracted from `entity_id`. An entity that lacks the `child_id` attribute is treated as no target at all.
+
+What happens with **no target** differs per service, which matters in multi-child families:
+
+| No target given | Services |
+|---|---|
+| Applies to **ALL** supervised children | [`block_device_for_school`](#familylinkblock_device_for_school), [`unblock_all_apps`](#familylinkunblock_all_apps), [`block_app`](#familylinkblock_app--familylinkunblock_app), [`unblock_app`](#familylinkblock_app--familylinkunblock_app), [`set_app_daily_limit`](#familylinkset_app_daily_limit), [`refresh_location`](#familylinkrefresh_location) |
+| Applies to the **first** supervised child only | [`enable_bedtime`](#familylinkenable_bedtime--familylinkdisable_bedtime), [`disable_bedtime`](#familylinkenable_bedtime--familylinkdisable_bedtime), [`set_bedtime`](#familylinkset_bedtime), [`enable_school_time`](#familylinkenable_school_time--familylinkdisable_school_time), [`disable_school_time`](#familylinkenable_school_time--familylinkdisable_school_time), [`enable_daily_limit`](#familylinkenable_daily_limit--familylinkdisable_daily_limit), [`disable_daily_limit`](#familylinkenable_daily_limit--familylinkdisable_daily_limit) |
+| Fails (a device target is mandatory) | [`add_time_bonus`](#familylinkadd_time_bonus), [`set_daily_limit`](#familylinkset_daily_limit), [`ring_device`](#familylinkring_device) |
+
+The device-scoped services (`add_time_bonus`, `set_daily_limit`, `ring_device`) raise an error unless a `device_id` is resolved, from the entity's attributes or the manual field. If they get a `device_id` but no `child_id`, the child resolves to the first supervised child.
+
+After every successful call the integration refreshes its data immediately, except `ring_device`.
+
+## App management
+
+### familylink.block_device_for_school
+
+Blocks all apps except a whitelist of essentials, simulating a device lock (school mode).
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `whitelist` | list of package names | no | - | Extra packages to keep allowed, merged with the built-in list below |
+| `entity_id` | entity id | no | - | Entity carrying a `child_id` attribute |
+| `child_id` | string | no | - | Child user ID. No target: ALL children |
+
+Built-in whitelist (always allowed): `com.android.dialer`, `com.android.contacts`, `com.android.mms`, `com.google.android.apps.messaging`, `com.android.settings`, `com.android.deskclock`, `com.google.android.apps.maps`, `com.android.emergency`, `com.android.systemui`, `com.android.launcher3`, `com.google.android.gms`.
+
+Whitelisted apps that were already blocked get unblocked. Per-app calls are spaced 0.1 s apart to avoid rate limiting.
+
 ```yaml
-service: familylink.block_device_for_school
+action: familylink.block_device_for_school
 data:
+  entity_id: sensor.emma_daily_screen_time
   whitelist:
-    - com.example.educationalapp
     - com.microsoft.teams
 ```
 
----
+### familylink.unblock_all_apps
 
-### 2. `familylink.unblock_all_apps`
-Unblocks all apps to end school mode and restore normal device usage.
+Unblocks every blocked app, ending school mode. Per-app calls are spaced 0.1 s apart.
 
-**Parameters:** None
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_id` | entity id | no | - | Entity carrying a `child_id` attribute |
+| `child_id` | string | no | - | Child user ID. No target: ALL children |
 
-**Example:**
 ```yaml
-service: familylink.unblock_all_apps
+action: familylink.unblock_all_apps
+data:
+  entity_id: sensor.emma_daily_screen_time
 ```
 
----
+### familylink.block_app / familylink.unblock_app
 
-### 3. `familylink.block_app`
-Blocks a specific app by its package name. If no child is specified, blocks the app for **ALL supervised children**.
+Blocks or unblocks a single app by package name.
 
-**Parameters:**
-- `package_name` (required): Android package name (e.g., `com.youtube.android`)
-- `entity_id` (optional): Select any Family Link entity for this child
-- `child_id` (optional): Child's user ID - if not specified, applies to ALL children
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `package_name` | string | yes | - | Android package name, e.g. `com.google.android.youtube` |
+| `entity_id` | entity id | no | - | Entity carrying a `child_id` attribute |
+| `child_id` | string | no | - | Child user ID. No target: ALL children |
 
-**Examples:**
 ```yaml
-# Block YouTube for ALL children
-service: familylink.block_app
+# Block YouTube for every supervised child
+action: familylink.block_app
 data:
-  package_name: com.youtube.android
+  package_name: com.google.android.youtube
 
-# Block YouTube for a specific child
-service: familylink.block_app
+# Unblock it for one child only
+action: familylink.unblock_app
 data:
-  package_name: com.youtube.android
-  entity_id: sensor.emma_screen_time
+  package_name: com.google.android.youtube
+  entity_id: sensor.emma_daily_screen_time
 ```
 
----
+### familylink.set_app_daily_limit
 
-### 4. `familylink.unblock_app`
-Unblocks a specific app by its package name. If no child is specified, unblocks the app for **ALL supervised children**.
+Sets the per-app time policy. Family Link has four app states, selected by the `minutes` value:
 
-**Parameters:**
-- `package_name` (required): Android package name
-- `entity_id` (optional): Select any Family Link entity for this child
-- `child_id` (optional): Child's user ID - if not specified, applies to ALL children
+| `minutes` | State |
+|---|---|
+| `-2` | Unlimited time: the app ignores device limits |
+| `-1` | App limit off: the app follows device limits |
+| `0` | Blocked |
+| `1` to `1440` | Daily limit in minutes |
 
-**Examples:**
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `package_name` | string | yes | - | Android package name |
+| `minutes` | int, -2 to 1440 | yes | - (form prefills 60) | See the state table above |
+| `entity_id` | entity id | no | - | Entity carrying a `child_id` attribute |
+| `child_id` | string | no | - | Child user ID. No target: ALL children |
+
 ```yaml
-# Unblock YouTube for ALL children
-service: familylink.unblock_app
-data:
-  package_name: com.youtube.android
-
-# Unblock YouTube for a specific child
-service: familylink.unblock_app
-data:
-  package_name: com.youtube.android
-  child_id: "123456789012345678901"
-```
-
----
-
-### 5. `familylink.set_app_daily_limit`
-Sets a daily time limit for a specific app. If no child is specified, applies to **ALL supervised children**.
-
-Google Family Link has 4 distinct app states:
-1. **Blocked** - App completely unavailable (`block_app` service)
-2. **App limit off** - App follows device daily limits (`minutes: -1`)
-3. **Set limit** - App has its own time restriction (`minutes: 1-1440`)
-4. **Unlimited time** - App ignores device limits entirely (`minutes: -2`)
-
-**Parameters:**
-- `package_name` (required): Android package name (e.g., `com.zhiliaoapp.musically` for TikTok)
-- `minutes` (required): Daily limit in minutes (-2 to 1440)
-  - `-2` = **Unlimited time** (app ignores device daily limits)
-  - `-1` = **App limit off** (app follows device daily limits)
-  - `0` = **Blocked** (0 minutes allowed for today)
-  - `1-1440` = **Set limit** (time limit in minutes)
-- `entity_id` (optional): Select any Family Link entity for this child
-- `child_id` (optional): Child's user ID - if not specified, applies to ALL children
-
-**Examples:**
-```yaml
-# Set TikTok to 60 minutes/day for ALL children
-service: familylink.set_app_daily_limit
-data:
-  package_name: com.zhiliaoapp.musically
-  minutes: 60
-
-# Set TikTok to 45 minutes for a specific child
-service: familylink.set_app_daily_limit
+action: familylink.set_app_daily_limit
 data:
   package_name: com.zhiliaoapp.musically
   minutes: 45
-  entity_id: sensor.emma_screen_time
-
-# Disable app limit (app follows device limits)
-service: familylink.set_app_daily_limit
-data:
-  package_name: com.zhiliaoapp.musically
-  minutes: -1
-
-# Set app to unlimited time (ignores device limits)
-service: familylink.set_app_daily_limit
-data:
-  package_name: com.zhiliaoapp.musically
-  minutes: -2
+  entity_id: sensor.emma_daily_screen_time
 ```
 
----
+## Time limits and bonuses
 
-## ⏰ Time Management Services
+### familylink.add_time_bonus
 
-### 6. `familylink.set_daily_limit`
-Sets the daily screen time limit for a device.
+Adds bonus screen time to one device. A device target is mandatory. The per-device buttons `button.<device>_15min`, `_30min`, `_60min` and `_reset_bonus` cover the common cases without a service call.
 
-**Parameters:**
-- `daily_minutes` (required): Number of minutes allowed per day (0-1440)
-  - Use `0` to disable the device for the day without fully locking it (unrestricted apps remain accessible)
-- `entity_id` (optional): Select a Family Link device switch (recommended)
-- `device_id` (optional): Device ID (if entity_id not provided)
-- `child_id` (optional): Child's user ID
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `bonus_minutes` | int, 1 to 1440 | yes | - (form prefills 30) | Minutes to add |
+| `entity_id` | entity id | no | - | The device switch (`switch.<device>`), which carries `device_id` and `child_id` |
+| `device_id` | string | no | - | Device token, if not using the entity |
+| `child_id` | string | no | - | Child user ID; defaults to the first supervised child |
 
-**Examples:**
 ```yaml
-# Set 2 hours of screen time via entity
-service: familylink.set_daily_limit
+action: familylink.add_time_bonus
 data:
-  entity_id: switch.pixel_tablet
-  daily_minutes: 120
-
-# Disable device for the day (unrestricted apps remain accessible)
-service: familylink.set_daily_limit
-data:
-  entity_id: switch.pixel_tablet
-  daily_minutes: 0
-```
-
----
-
-### 7. `familylink.set_bedtime`
-Sets bedtime start and end times for a specific day.
-
-**Parameters:**
-- `start_time` (required): Bedtime start time (e.g., "20:45")
-- `end_time` (required): Bedtime end time (e.g., "07:30")
-- `day` (optional): Day of the week (1=Monday, 7=Sunday). Defaults to today.
-- `child_id` (optional): Child's user ID (optional if only one child)
-
-**Examples:**
-```yaml
-# Set bedtime for today
-service: familylink.set_bedtime
-data:
-  start_time: "20:45"
-  end_time: "07:30"
-
-# Set bedtime for Saturday (day 6)
-service: familylink.set_bedtime
-data:
-  start_time: "22:00"
-  end_time: "09:00"
-  day: 6
-```
-
----
-
-### 8. `familylink.enable_bedtime` / `familylink.disable_bedtime`
-Enables or disables bedtime restrictions for a child.
-
-**Parameters:**
-- `entity_id` (optional): Select any Family Link entity for this child
-- `child_id` (optional): Child's user ID
-
-**Example:**
-```yaml
-service: familylink.enable_bedtime
-data:
-  child_id: "123456789012345678901"
-```
-
----
-
-### 9. `familylink.add_time_bonus`
-Adds bonus time to a device.
-
-**Parameters:**
-- `bonus_minutes` (required): Bonus minutes (1-1440)
-- `entity_id` (optional): Select a Family Link device switch
-- `device_id` (optional): Device ID
-- `child_id` (optional): Child's user ID
-
-**Example:**
-```yaml
-service: familylink.add_time_bonus
-data:
-  entity_id: switch.pixel_tablet
+  entity_id: switch.pixel_7
   bonus_minutes: 30
 ```
 
----
+### familylink.set_daily_limit
 
-### 10. `familylink.enable_school_time` / `familylink.disable_school_time`
-Enables or disables school time (evening limit) restrictions for a child.
+Sets the daily screen time quota of one device. A device target is mandatory.
 
-**Parameters:**
-- `entity_id` (optional): Select any Family Link entity for this child
-- `child_id` (optional): Child's user ID
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `daily_minutes` | int, 0 to 1440 | yes | - (form prefills 120) | Minutes allowed per day. `0` disables the device for the day without fully locking it |
+| `entity_id` | entity id | no | - | The device switch (`switch.<device>`) |
+| `device_id` | string | no | - | Device token, if not using the entity |
+| `child_id` | string | no | - | Child user ID; defaults to the first supervised child |
 
-**Example:**
 ```yaml
-service: familylink.enable_school_time
+action: familylink.set_daily_limit
 data:
-  entity_id: sensor.emma_screen_time
+  entity_id: switch.pixel_7
+  daily_minutes: 120
 ```
 
----
+### familylink.enable_daily_limit / familylink.disable_daily_limit
 
-### 11. `familylink.enable_daily_limit` / `familylink.disable_daily_limit`
-Enables or disables the daily screen time limit for a child.
+Turns the child's daily screen time limit on or off.
 
-**Parameters:**
-- `entity_id` (optional): Select any Family Link entity for this child
-- `child_id` (optional): Child's user ID
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_id` | entity id | no | - | Entity carrying a `child_id` attribute |
+| `child_id` | string | no | - | Child user ID. No target: FIRST supervised child |
 
-**Example:**
 ```yaml
-service: familylink.enable_daily_limit
+action: familylink.enable_daily_limit
 data:
-  child_id: "123456789012345678901"
+  entity_id: sensor.emma_daily_screen_time
 ```
 
----
+## Bedtime and school time schedules
 
-## 📍 Location Services
+### familylink.set_bedtime
 
-### 12. `familylink.refresh_location`
-Forces a fresh GPS location update from the child's device. This requests the device to send its current position instead of returning cached data from Google servers.
+Sets bedtime start and end times. By default this edits the recurring **weekly** schedule for the chosen day, like Family Link's own weekly schedule editor. Use `scope: today` for a one-off "tonight only" override that leaves the weekly schedule untouched.
 
-**Parameters:**
-- `entity_id` (optional): Select any Family Link entity for this child
-- `child_id` (optional): Child's user ID - if not specified, refreshes ALL children
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `start_time` | string, `H:MM` or `HH:MM` (24 h) | yes | - | Bedtime start, e.g. `20:45` |
+| `end_time` | string, `H:MM` or `HH:MM` (24 h) | yes | - | Bedtime end, usually next morning, e.g. `07:30` |
+| `day` | int, 1 to 7 (1 = Monday) | no | today | Day of the week to change |
+| `scope` | `weekly` or `today` | no | `weekly` | `weekly` edits the recurring schedule; `today` posts a one-off override |
+| `child_id` | string | no | - | Child user ID. No target: FIRST supervised child. There is no `entity_id` field |
 
-**Examples:**
 ```yaml
-# Refresh location for ALL children
-service: familylink.refresh_location
-
-# Refresh location for a specific child
-service: familylink.refresh_location
+# Later bedtime every Friday, permanently
+action: familylink.set_bedtime
 data:
-  entity_id: device_tracker.emma
+  start_time: "22:00"
+  end_time: "09:00"
+  day: 5
+  scope: weekly
 ```
 
-> **Note:** This uses more battery on the child's device than the normal cached location polling.
+### familylink.enable_bedtime / familylink.disable_bedtime
 
----
+Turns bedtime restrictions on or off. This flips the weekly toggle **and** posts a same-day override, so the change applies tonight, mirroring what the Family Link app does.
 
-## 🤖 Automation Examples
-
-### Automation: Block phone during school hours
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_id` | entity id | no | - | Entity carrying a `child_id` attribute |
+| `child_id` | string | no | - | Child user ID. No target: FIRST supervised child |
 
 ```yaml
-automation:
-  - alias: "Block phone during class"
-    description: "Blocks all apps except essentials from 8am to 3:30pm on weekdays"
-    trigger:
-      - platform: time
-        at: "08:00:00"
-    condition:
-      - condition: time
-        weekday:
-          - mon
-          - tue
-          - wed
-          - thu
-          - fri
-    action:
-      - service: familylink.block_device_for_school
-        data:
-          whitelist:
-            - com.microsoft.teams  # Allow Teams for school
-      - service: notify.mobile_app_parent_phone
-        data:
-          title: "School Mode Activated"
-          message: "Phone is locked until 3:30pm"
-
-  - alias: "Unblock after school"
-    description: "Unblocks phone after school"
-    trigger:
-      - platform: time
-        at: "15:30:00"
-    condition:
-      - condition: time
-        weekday:
-          - mon
-          - tue
-          - wed
-          - thu
-          - fri
-    action:
-      - service: familylink.unblock_all_apps
-      - service: notify.mobile_app_parent_phone
-        data:
-          title: "School Mode Ended"
-          message: "Phone is unlocked"
+action: familylink.disable_bedtime
+data:
+  entity_id: sensor.emma_daily_screen_time
 ```
 
-### Automation: Block YouTube after 9pm
+### familylink.enable_school_time / familylink.disable_school_time
+
+Turns school time restrictions on or off.
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_id` | entity id | no | - | Entity carrying a `child_id` attribute |
+| `child_id` | string | no | - | Child user ID. No target: FIRST supervised child |
 
 ```yaml
-automation:
-  - alias: "Block YouTube at night"
-    trigger:
-      - platform: time
-        at: "21:00:00"
-    action:
-      - service: familylink.block_app
-        data:
-          package_name: com.youtube.android
-      - service: familylink.block_app
-        data:
-          package_name: com.google.android.youtube
-
-  - alias: "Unblock YouTube in the morning"
-    trigger:
-      - platform: time
-        at: "07:00:00"
-    action:
-      - service: familylink.unblock_app
-        data:
-          package_name: com.youtube.android
-      - service: familylink.unblock_app
-        data:
-          package_name: com.google.android.youtube
+action: familylink.enable_school_time
+data:
+  entity_id: sensor.emma_daily_screen_time
 ```
 
-### Automation: Block based on screen time
+## Location and device actions
+
+### familylink.refresh_location
+
+Requests a fresh GPS fix from the child's device instead of the cached position Google normally serves. Uses more battery on the child's device than the regular polling.
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_id` | entity id | no | - | Entity carrying a `child_id` attribute |
+| `child_id` | string | no | - | Child user ID. No target: ALL children |
 
 ```yaml
-automation:
-  - alias: "Block if too much screen time"
-    trigger:
-      - platform: state
-        entity_id: sensor.family_link_daily_screen_time
-    condition:
-      - condition: numeric_state
-        entity_id: sensor.family_link_daily_screen_time
-        above: 120  # 2 hours in minutes
-    action:
-      - service: familylink.block_device_for_school
-      - service: notify.mobile_app_parent_phone
-        data:
-          title: "Screen Time Limit Reached"
-          message: >
-            Screen time: {{ states('sensor.family_link_screen_time_formatted') }}
-            Device has been locked.
+action: familylink.refresh_location
+data:
+  entity_id: sensor.emma_daily_screen_time
 ```
 
-### Automation: Extend bedtime on weekends
+### familylink.ring_device
+
+Makes the device ring to help locate it. A device target is mandatory. This is the only service that does not trigger a data refresh. The per-device button `button.<device>_ring` does the same thing.
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_id` | entity id | no | - | An entity carrying a `device_id` attribute: use the device switch (`switch.<device>`), or pass `device_id` manually |
+| `device_id` | string | no | - | Device token, if not using the entity |
+| `child_id` | string | no | - | Child user ID; defaults to the first supervised child |
 
 ```yaml
-automation:
-  - alias: "Weekend bedtime - Friday"
-    trigger:
-      - platform: time
-        at: "18:00:00"
-    condition:
-      - condition: time
-        weekday: fri
-    action:
-      - service: familylink.set_bedtime
-        data:
-          start_time: "22:00"
-          end_time: "09:00"
-          day: 5  # Friday
-      - service: familylink.set_bedtime
-        data:
-          start_time: "22:00"
-          end_time: "09:00"
-          day: 6  # Saturday
+action: familylink.ring_device
+data:
+  entity_id: switch.pixel_7
 ```
 
----
+## Finding package names
 
-## 🔍 How to Find Package Names
+| Source | Where the package name is |
+|---|---|
+| `sensor.<child>_daily_screen_time` | `apps` attribute: every app used today with its `package` |
+| `sensor.<child>_top_app_1` to `_top_app_10` | `package_name` attribute |
+| `sensor.<child>_blocked_apps`, `_apps_with_time_limits`, `_apps_without_limits`, `_always_allowed_apps` | `apps` attribute lists name and package |
+| Google Play Store | The `id` parameter in the app's store URL, e.g. `play.google.com/store/apps/details?id=com.google.android.youtube` |
 
-1. **Via `sensor.family_link_installed_apps`:**
-   - Check sensor attributes in Developer Tools → States
-   - Search for the app in the list
-
-2. **Via `sensor.family_link_blocked_apps`:**
-   - Blocked apps show their name and package
-
-3. **Via `sensor.family_link_top_app_X`:**
-   - Check the `package_name` attribute of each top app
-
-4. **Via Google Play Store:**
-   - App URL: `https://play.google.com/store/apps/details?id=com.example.app`
-   - The `id=` is the package name
-
----
-
-## ⚠️ Important Notes
-
-1. **Delay between blocks:** Services add a 0.1s delay between each app to avoid Google rate limiting
-
-2. **Automatic refresh:** After each service call, data is automatically refreshed
-
-3. **System apps:** Some system apps cannot be blocked to avoid breaking the device
-
-4. **Persistence:** Blocks persist until you manually unblock or via automation
-
-5. **Multiple children:** App control services (`block_app`, `unblock_app`, `set_app_daily_limit`) apply to **ALL children** by default. Specify `entity_id` or `child_id` to target a specific child.
-
----
-
-## 📊 Complementary Sensors
-
-Use these sensors to create smart automations:
-
-- `sensor.family_link_daily_screen_time` - Total screen time in minutes
-- `sensor.family_link_screen_time_formatted` - Formatted time (HH:MM:SS)
-- `sensor.family_link_installed_apps` - Number of installed apps
-- `sensor.family_link_blocked_apps` - Number and list of blocked apps
-- `sensor.family_link_apps_with_time_limits` - Apps with time limits
-- `sensor.family_link_top_app_1` to `#10` - Top 10 most used apps
-- `sensor.family_link_child_info` - Info about the supervised child
-
----
-
-## 🆘 Troubleshooting
-
-### Service doesn't block apps
-- Verify authentication is active (add-on running and cookies valid)
-- Check logs in Home Assistant: Configuration → Logs
-- Search for `familylink` in logs
-
-### Apps unblock by themselves
-- Check for conflicting automations
-- Verify parents haven't unblocked from the Family Link app
-
-### Device is completely blocked
-- Call the `familylink.unblock_all_apps` service
-- If that doesn't work, unlock from the Family Link mobile app
-
----
-
-## 🔄 Recommended Workflow
-
-1. **Test manually first** from Developer Tools → Services
-2. **Check logs** to confirm success
-3. **Create automations** once tests pass
-4. **Test automations** by temporarily changing times
-5. **Enable in production** with actual school hours
-
----
-
-## 📝 Complete Example: Full Screen Time Management
-
-```yaml
-# School schedule
-automation:
-  - id: school_mode_on
-    alias: "Enable school mode"
-    trigger:
-      - platform: time
-        at: "08:00:00"
-    condition:
-      - condition: time
-        weekday: [mon, tue, wed, thu, fri]
-    action:
-      - service: familylink.block_device_for_school
-      - service: notify.parent
-        data:
-          message: "📚 School mode activated"
-
-  - id: school_mode_off
-    alias: "Disable school mode"
-    trigger:
-      - platform: time
-        at: "15:30:00"
-    condition:
-      - condition: time
-        weekday: [mon, tue, wed, thu, fri]
-    action:
-      - service: familylink.unblock_all_apps
-      - service: notify.parent
-        data:
-          message: "✅ School mode disabled"
-
-# Bedtime
-  - id: bedtime_block_apps
-    alias: "Block apps at bedtime"
-    trigger:
-      - platform: time
-        at: "21:00:00"
-    action:
-      - service: familylink.block_device_for_school
-      - service: notify.parent
-        data:
-          message: "😴 Bedtime - Phone locked"
-
-  - id: morning_unblock
-    alias: "Unblock in the morning"
-    trigger:
-      - platform: time
-        at: "07:00:00"
-    action:
-      - service: familylink.unblock_all_apps
-      - service: notify.parent
-        data:
-          message: "☀️ Good morning - Phone unlocked"
-
-# Screen time limit
-  - id: screen_time_limit
-    alias: "Block if limit reached"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.family_link_daily_screen_time
-        above: 180  # 3 hours
-    action:
-      - service: familylink.block_device_for_school
-      - service: notify.parent
-        data:
-          title: "⏱️ Time limit reached"
-          message: >
-            Screen time today: {{ states('sensor.family_link_screen_time_formatted') }}
-            Phone locked until tomorrow.
-```
+If a call fails, check the Home Assistant logs for `familylink` entries, and see [INSTALL.md](INSTALL.md) for authentication troubleshooting.
