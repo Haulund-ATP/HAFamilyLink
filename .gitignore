@@ -61,3 +61,8 @@ Thumbs.db
 
 # Logs
 *.log 
+# Local working files
+*.stackdump
+.claude/
+CLAUDE.md
+FORUM_POST.md
