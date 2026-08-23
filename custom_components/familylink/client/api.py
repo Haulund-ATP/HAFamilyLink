@@ -3042,3 +3042,84 @@ class FamilyLinkClient:
 			del self._cookie_dict
 		if hasattr(self, '_cookie_header'):
 			del self._cookie_header
+
+	async def set_contact_restriction(self, person_id: str, restriction_level: int) -> bool:
+		"""Update the contact restriction level for a child."""
+		if not self.is_authenticated():
+			from .exceptions import AuthenticationError # Adjust if AuthenticationError is imported at the top
+			raise AuthenticationError("Not authenticated")
+
+		try:
+			session = await self._get_session()
+			cookie_header = self._get_cookie_header()
+			
+			# Use the built-in URL generator
+			url = self._people_url(person_id, "trustedcontacts:update")
+			
+			# Format the payload exactly as the API expects it
+			import json
+			payload = json.dumps([None, person_id, None, None, restriction_level])
+			
+			_LOGGER.debug(f"Setting contact restriction level to {restriction_level} for {person_id}")
+
+			async with session.post(
+				url,
+				headers={
+					"Content-Type": "application/json+protobuf",
+					"Cookie": cookie_header,
+				},
+				data=payload,
+			) as response:
+				if response.status != 200:
+					response_text = await response.text()
+					_LOGGER.error(
+						"Failed to set contact restriction (HTTP %s): %s",
+						response.status, response_text,
+					)
+					return False
+				
+				_LOGGER.info(f"Successfully set contact restriction to {restriction_level} for {person_id}")
+				return True
+
+		except Exception as err:
+			_LOGGER.error(f"Unexpected error setting contact restriction: {err}")
+			return False
+
+	async def get_contact_restriction(self, person_id: str) -> int | None:
+		"""Fetch the current contact restriction level for a child."""
+		if not self.is_authenticated():
+			from .exceptions import AuthenticationError
+			raise AuthenticationError("Not authenticated")
+
+		try:
+			session = await self._get_session()
+			cookie_header = self._get_cookie_header()
+			url = self._people_url(person_id, "trustedcontacts")
+
+			async with session.get(
+				url,
+				headers={
+					"Content-Type": "application/json+protobuf",
+					"Cookie": cookie_header,
+				},
+			) as response:
+				if response.status != 200:
+					_LOGGER.error(f"Failed to get contact restriction: {response.status}")
+					return None
+
+				response_text = await response.text()
+				
+				# Clean Google's anti-hijacking prefix if it exists, then parse
+				import json
+				clean_text = response_text.lstrip(")]}'\n ")
+				data = json.loads(clean_text)
+
+				# The restriction level is at index 2 of the top-level array
+				if len(data) > 2 and isinstance(data[2], int):
+					return data[2]
+				
+				return None
+
+		except Exception as err:
+			_LOGGER.error(f"Error fetching contact restriction: {err}")
+			return None			
