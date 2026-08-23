@@ -4,7 +4,7 @@
 [![HACS][hacsbadge]][hacs]
 [![License][license-shield]][license]
 
-Monitor and control Google Family Link from Home Assistant: screen time, device lock, bedtime and school time schedules, daily limits, app blocking, time bonuses, and optional GPS location. Multiple children and multiple devices are supported out of the box.
+Monitor and control Google Family Link from Home Assistant: screen time, device lock, bedtime and school time schedules, daily limits, communication restrictions, app blocking, time bonuses, and optional GPS location. Multiple children and multiple devices are supported out of the box.
 
 > **Disclaimer.** This integration uses unofficial, reverse-engineered Google Family Link endpoints. There is no official API: Google can change or break things at any time, and using this integration may violate Google's Terms of Service and could result in account suspension. **Use at your own risk.** This project is not affiliated with, endorsed by, or connected to Google LLC.
 
@@ -64,6 +64,7 @@ Each child appears as a hub device named `<child> (Family Link)`, with every phy
 | `sensor.<child>_battery_level` | Child (GPS opt-in) | Battery of the device providing the location |
 | `device_tracker.<child>_family_link` | Child (GPS opt-in) | GPS location: zone, saved place, address, battery |
 | `switch.<child>_bedtime`, `_school_time`, `_daily_limit` | Child | Toggle restrictions. State reflects today's effective setting (weekly rule merged with same-day overrides); the school time switch also exposes `school_time_enabled_weekly` and `school_time_scheduled_today` attributes |
+| `select.<child>_allowed_calls_texts` | Child | Choose who can call and text the child: anyone, only contacts you add, or contacts you add and limited groups |
 | `sensor.<device>_screen_time_remaining` | Device | Remaining minutes today, accounting for bonuses and used time |
 | `sensor.<device>_next_restriction` | Device | Next upcoming restriction as text, window timestamps in attributes |
 | `sensor.<device>_daily_limit` | Device | Configured daily quota in minutes |

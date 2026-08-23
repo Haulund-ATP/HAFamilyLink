@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- **Allowed Calls & Texts select entity** - Each child now has a `select.<child>_allowed_calls_texts` entity for choosing the communication restriction level: **Anyone**, **Only contacts I add**, or **Contacts I add & limited groups**. The selection is read from and written to Google's trusted contacts settings.
+- **Contact restriction API methods** - Added client support for reading and updating the trusted-contact restriction level used by the new select entity.
 - **Time bonuses are now verified after creation (issue #141)** - Google acknowledges a bonus `timeLimitOverrides:batchCreate` with HTTP 200 even when the override never takes effect on the target device (reported on ChromeOS: the device unlocks but the Family Link app shows no active bonus and no countdown). The client now logs the batchCreate response body, then polls `appliedTimeLimits` (after 3s, then 5 more) to check the override is actually visible, logging a warning when it is not instead of reporting an unconditional success. Purely diagnostic: behavior is unchanged, but silent half-failures now leave a trace that makes reports like #141 diagnosable.
 
 ### Fixed

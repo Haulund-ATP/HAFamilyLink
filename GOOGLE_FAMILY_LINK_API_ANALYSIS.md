@@ -41,6 +41,7 @@
 | **Location** | `/kidsmanagement/v1/families/mine/location/{childId}?locationRefreshMode=...&supportedConsents=SUPERVISED_LOCATION_SHARING` | Child's GPS location + **battery level** of source device. |
 | **TimeLimit (scheduling)** | `/kidsmanagement/v1/people/{childId}/timeLimit?capabilities=TIME_LIMIT_CLIENT_CAPABILITY_SCHOOLTIME&timeLimitKey.type=SUPERVISED_DEVICES` | **Scheduling** Bedtime & Schooltime + **global switches** (ON/OFF) via "revisions". |
 | **AppliedTimeLimits (applied state)** | `/kidsmanagement/v1/people/{childId}/appliedTimeLimits?capabilities=TIME_LIMIT_CLIENT_CAPABILITY_SCHOOLTIME` | **Daily state per device**: daily limits, active windows, allowed/consumed aggregates, **bonus overrides**. |
+| **Trusted contacts (communication restrictions)** | `/kidsmanagement/v1/people/{childId}/trustedcontacts` | Returns the current allowed-calls-and-texts restriction level. |
 
 > Other endpoints exist without being exhaustive here (capability list not public). This doc covers those necessary for reading **bedtime/schooltime/daily-limit** & app usage/notifications/photos.
 
@@ -63,6 +64,8 @@
 | **Toggle bedtime weekly policy** | PUT | `/kidsmanagement/v1/people/{childId}/timeLimit:update?$httpMethod=PUT` | `[null, childId, [[null, null, null, null], null, null, null, [null, [["487088e7-38b4-4f18-a5fb-4aab64ba9d2f", state]]]], null, [1]]` | UUID `487088e7-...` = bedtime policy.<br>state: 2=ON, 1=OFF. ⚠️ **Like school time, this only flips the weekly switch.** The bedtime slot already running tonight is not cancelled. The web app pairs this PUT with **Apply bedtime today** (above) when the user confirms "Apply changes to today as well?". |
 | **Toggle school time weekly policy** | PUT | `/kidsmanagement/v1/people/{childId}/timeLimit:update?$httpMethod=PUT` | `[null, childId, [[null, null, null, null], null, null, null, [null, [["579e5e01-8dfd-42f3-be6b-d77984842202", state]]]], null, [1]]` | UUID `579e5e01-...` = school time policy.<br>state: 2=ON, 1=OFF. ⚠️ **This only flips the weekly switch — it does NOT apply a change to the current day.** If today has no weekly slot, nothing happens on the child device. To actually lock/unlock today, use **Apply school time today** (above). |
 | **Enable/Disable daily limit** | PUT | `/kidsmanagement/v1/people/{childId}/timeLimit:update?$httpMethod=PUT` | `[null, childId, [null, [[state, null, null, null]]], null, [1]]` | state: 2=ON, 1=OFF |
+| **Read contact restriction** | GET | `/kidsmanagement/v1/people/{childId}/trustedcontacts` | No body | The restriction level is returned at index `[2]` of the top-level response array. |
+| **Set contact restriction** | POST | `/kidsmanagement/v1/people/{childId}/trustedcontacts:update` | `[null, childId, null, null, restriction_level]` | Observed levels: `1` = Anyone, `3` = Only contacts I add, `4` = Contacts I add & limited groups. |
 
 ### Policy UUIDs (hardcoded)
 - **Bedtime (Downtime)**: `487088e7-38b4-4f18-a5fb-4aab64ba9d2f`
