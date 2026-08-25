@@ -230,6 +230,13 @@ At the end of response, a block of tuples indicates the global state of switches
 ```
 - `stateFlag`: **2 = ON**, **1 = OFF**
 
+#### 2.3.1. UUID-keyed window rows (issues #74, #151)
+Some accounts return window rows keyed by a per-slot UUID instead of a `CAEQ*`/`CAMQ*` code, for bedtime and school time alike:
+```
+["8bc2de13-ee37-4005-8799-8187439db320", day, stateFlag, [21,30], [8,0], createdEpochMs, updatedEpochMs, policyId]
+```
+The key carries no type information, and the two rows appear in **no guaranteed order**. The reliable discriminator is **`policyId` at `[7]`**: it is the same id as in the `timeLimit` revisions (`487088e7-...` = bedtime, `579e5e01-...` = school time). Classifying by list position ("first row = bedtime") swapped the two windows whenever the school time row came first (#151). The parser now classifies by prefix, then by `policyId` (matched against the revision ids and the known constants), and only as a last resort by hours (a window crossing midnight or starting at 18:00 or later is treated as bedtime).
+
 #### 2.4. Lock state & Bonus override (position [0] of device block)
 Position `[0]` of each device block contains either:
 - **Lock state**: `[null, null, action_code, device_id]`

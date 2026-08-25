@@ -221,11 +221,18 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 			# precedence over the appliedTimeLimits heuristic below.
 			bedtime_enabled_today_from_rules = None
 			school_time_enabled_today_from_rules = None
+			# Policy ids from the revisions, handed to the appliedTimeLimits
+			# parser so UUID-keyed windows are classified by policy instead of
+			# by list order (issue #151).
+			bedtime_rule_id = None
+			schooltime_rule_id = None
 
 			try:
 				time_limit_config = await self.client.async_get_time_limit(account_id=child_id)
 				bedtime_enabled = time_limit_config.get("bedtime_enabled")
 				school_time_enabled = time_limit_config.get("school_time_enabled")
+				bedtime_rule_id = time_limit_config.get("bedtime_rule_id")
+				schooltime_rule_id = time_limit_config.get("schooltime_rule_id")
 				bedtime_enabled_today_from_rules = time_limit_config.get("bedtime_enabled_today")
 				school_time_enabled_today_from_rules = time_limit_config.get("school_time_enabled_today")
 				bedtime_schedule = time_limit_config.get("bedtime_schedule")
@@ -264,7 +271,11 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 			schooltime_enabled_today = None
 
 			try:
-				applied_limits_data = await self.client.async_get_applied_time_limits(account_id=child_id)
+				applied_limits_data = await self.client.async_get_applied_time_limits(
+					account_id=child_id,
+					bedtime_rule_id=bedtime_rule_id,
+					schooltime_rule_id=schooltime_rule_id,
+				)
 				device_lock_states = applied_limits_data.get("device_lock_states", {})
 				devices_time_data = applied_limits_data.get("devices", {})
 				bedtime_enabled_today = applied_limits_data.get("bedtime_enabled_today")
