@@ -1175,11 +1175,84 @@ class FamilyLinkClient:
 			_LOGGER.error("Failed to ring device %s: %s", device_id, err)
 			raise DeviceControlError(f"Failed to ring device: {err}") from err
 
-	async def async_get_applied_time_limits(self, account_id: str | None = None) -> dict[str, Any]:
+	# Policy ids observed at item[7] of every window row (timeLimit and
+	# appliedTimeLimits alike). They match the revision ids returned by
+	# async_get_time_limit; kept as constants so classification still works
+	# when the revisions could not be read.
+	_BEDTIME_POLICY_ID = "487088e7-38b4-4f18-a5fb-4aab64ba9d2f"
+	_SCHOOLTIME_POLICY_ID = "579e5e01-8dfd-42f3-be6b-d77984842202"
+
+	@classmethod
+	def _classify_applied_window(
+		cls,
+		item: list,
+		bedtime_rule_id: str | None = None,
+		schooltime_rule_id: str | None = None,
+	) -> tuple[str, str]:
+		"""Tell a bedtime window row from a school time one (issue #151).
+
+		Row shape: [key, day, stateFlag, [startH, startM], [endH, endM],
+		createdMs, updatedMs, policyId]. Returns (window_type, reason) where
+		window_type is "bedtime", "schooltime" or "unknown".
+
+		Order of evidence:
+		1. Key prefix: CAEQ* = bedtime, CAMQ* = school time.
+		2. Policy id at [7], compared with the timeLimit revision ids and the
+		   known constants. This settles UUID-keyed rows, which some accounts
+		   return instead of CAEQ/CAMQ keys (issue #74).
+		3. Hours: a window that crosses midnight or starts in the evening is
+		   bedtime, anything else school time. Heuristic, logged as such.
+		"""
+		key = item[0] if item and isinstance(item[0], str) else ""
+		if key.startswith("CAEQ"):
+			return "bedtime", "CAEQ prefix"
+		if key.startswith("CAMQ"):
+			return "schooltime", "CAMQ prefix"
+
+		policy_id = item[7] if len(item) > 7 and isinstance(item[7], str) else None
+		if policy_id:
+			bedtime_ids = {cls._BEDTIME_POLICY_ID, bedtime_rule_id} - {None}
+			schooltime_ids = {cls._SCHOOLTIME_POLICY_ID, schooltime_rule_id} - {None}
+			if policy_id in bedtime_ids:
+				return "bedtime", f"policy id {policy_id}"
+			if policy_id in schooltime_ids:
+				return "schooltime", f"policy id {policy_id}"
+
+		start = item[3] if len(item) > 3 else None
+		end = item[4] if len(item) > 4 else None
+
+		def _hm(value):
+			if (
+				isinstance(value, list) and len(value) == 2
+				and type(value[0]) is int and type(value[1]) is int
+			):
+				return (value[0], value[1])
+			return None
+
+		start_hm = _hm(start)
+		end_hm = _hm(end)
+		if start_hm and end_hm:
+			crosses_midnight = end_hm < start_hm
+			reason = f"hours heuristic (start={start}, end={end}, unmatched policy id {policy_id})"
+			if crosses_midnight or start_hm[0] >= 18:
+				return "bedtime", reason
+			return "schooltime", reason
+
+		return "unknown", f"no usable evidence (key={key!r}, policy id {policy_id})"
+
+	async def async_get_applied_time_limits(
+		self,
+		account_id: str | None = None,
+		bedtime_rule_id: str | None = None,
+		schooltime_rule_id: str | None = None,
+	) -> dict[str, Any]:
 		"""Get applied time limits for all devices (time remaining, windows, etc.).
 
 		Args:
 			account_id: User ID of the supervised child (optional)
+			bedtime_rule_id: Bedtime policy id from the timeLimit revisions, used
+				to classify UUID-keyed windows (issue #151). Optional.
+			schooltime_rule_id: Same for school time. Optional.
 
 		Returns:
 			Dictionary with:
@@ -1408,27 +1481,26 @@ class FamilyLinkClient:
 														f"FINAL enabled={daily_enabled}, minutes={minutes}"
 													)
 										elif len(item) == 8:
-											# Time window (8 elements): could be bedtime or schooltime
-											# For CAEQ prefix -> bedtime
-											# For CAMQ prefix -> schooltime
-											# For UUID -> determine by structure: if bedtime not yet set, parse as bedtime; otherwise schooltime
+											# Time window (8 elements): bedtime or school time.
+											# Classified by the key prefix (CAEQ/CAMQ) or, for
+											# UUID-keyed rows, by the policy id at item[7] and
+											# as a last resort by the hours (issue #151). The
+											# previous "first UUID row seen = bedtime" rule
+											# swapped the two windows whenever Google listed
+											# the school time row first.
 											day = item[1] if len(item) > 1 else None
 											state_flag = item[2] if len(item) > 2 else None
 											start_time = item[3] if len(item) > 3 else None
 											end_time = item[4] if len(item) > 4 else None
 
-											parse_as_bedtime = is_caeq or (is_uuid and device_info["bedtime_window"] is None)
-											parse_as_schooltime = is_camq or (is_uuid and not parse_as_bedtime)
-
-											if parse_as_bedtime:
-												window_type = "bedtime"
-											elif parse_as_schooltime:
-												window_type = "schooltime"
-											else:
-												window_type = "unknown"
+											window_type, classify_reason = self._classify_applied_window(
+												item, bedtime_rule_id, schooltime_rule_id
+											)
+											parse_as_bedtime = window_type == "bedtime"
+											parse_as_schooltime = window_type == "schooltime"
 
 											_LOGGER.debug(
-												f"Device {device_id}: {first_elem} is {window_type} window (8 elements) - "
+												f"Device {device_id}: {first_elem} is {window_type} window (8 elements, by {classify_reason}) - "
 												f"day={day}, state_flag={state_flag}, start={start_time}, end={end_time}"
 											)
 

@@ -629,22 +629,52 @@ async def async_setup_services(hass: HomeAssistant, coordinator: FamilyLinkDataU
 			device_id = device_id or extracted_device_id
 			child_id = child_id or extracted_child_id
 
-		if not device_id:
-			raise ValueError("device_id is required. Either select an entity or provide device_id manually.")
+		# A child_id on its own targets every device of that child (issue
+		# #148): the daily limit is a per-device override on Google's side,
+		# so the call is fanned out to each known device of the child.
+		if device_id:
+			device_ids = [device_id]
+		elif child_id:
+			device_ids = [
+				device["id"]
+				for child in (coordinator.data or {}).get("children_data", [])
+				if child.get("child_id") == child_id
+				for device in child.get("devices", [])
+				if device.get("id")
+			]
+			if not device_ids:
+				raise ValueError(
+					f"No device known for child_id {child_id}. Check the child_id "
+					"or select a device entity instead."
+				)
+		else:
+			raise ValueError(
+				"device_id or child_id is required. Either select an entity or "
+				"provide one of them manually."
+			)
 
-		_LOGGER.info(f"Service called: set_daily_limit ({daily_minutes} minutes) for device {device_id}")
+		_LOGGER.info(
+			f"Service called: set_daily_limit ({daily_minutes} minutes) for "
+			f"{len(device_ids)} device(s): {', '.join(device_ids)}"
+		)
 
 		try:
-			success = await coordinator.client.async_set_daily_limit(
-				daily_minutes=daily_minutes,
-				device_id=device_id,
-				account_id=child_id
-			)
-			if success:
-				_LOGGER.info(f"Successfully set daily limit to {daily_minutes} minutes for device {device_id}")
+			results = {}
+			for target_device_id in device_ids:
+				results[target_device_id] = await coordinator.client.async_set_daily_limit(
+					daily_minutes=daily_minutes,
+					device_id=target_device_id,
+					account_id=child_id
+				)
+			failed = [d for d, ok in results.items() if not ok]
+			if failed:
+				_LOGGER.error(f"Failed to set daily limit for device(s): {', '.join(failed)}")
+			if len(failed) < len(device_ids):
+				_LOGGER.info(
+					f"Successfully set daily limit to {daily_minutes} minutes for "
+					f"{len(device_ids) - len(failed)} device(s)"
+				)
 				await coordinator.async_request_refresh()
-			else:
-				_LOGGER.error(f"Failed to set daily limit for device {device_id}")
 		except Exception as err:
 			_LOGGER.error(f"Error setting daily limit: {err}")
 			raise

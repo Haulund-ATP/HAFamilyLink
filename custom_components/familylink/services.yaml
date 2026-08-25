@@ -211,7 +211,7 @@ disable_bedtime:
           integration: familylink
     child_id:
       name: Child ID (manual)
-      description: Child's user ID - only needed if not using entity selector
+      description: Child's user ID. Given alone (no entity, no device_id), the limit is applied to every device of that child.
       required: false
       example: "123456789012345678901"
       selector:
@@ -361,7 +361,7 @@ disable_daily_limit:
 
 set_daily_limit:
   name: Set Daily Limit
-  description: Set daily time limit duration for a device (e.g., 120 minutes for 2 hours). You can either select a device entity OR provide device_id/child_id manually.
+  description: Set daily time limit duration for a device (e.g., 120 minutes for 2 hours). Select a device entity, provide a device_id, or provide only a child_id to apply the limit to every device of that child.
   fields:
     entity_id:
       name: Device Entity
