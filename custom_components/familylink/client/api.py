@@ -1182,12 +1182,54 @@ class FamilyLinkClient:
 	_BEDTIME_POLICY_ID = "487088e7-38b4-4f18-a5fb-4aab64ba9d2f"
 	_SCHOOLTIME_POLICY_ID = "579e5e01-8dfd-42f3-be6b-d77984842202"
 
+	# Window type codes used by the typed section of appliedTimeLimits and by
+	# the timeLimit revisions: 1 = bedtime, 2 = school time.
+	_WINDOW_TYPE_NAMES = {1: "bedtime", 2: "schooltime"}
+
+	@classmethod
+	def _collect_typed_windows(cls, device_data: Any) -> dict[str, str]:
+		"""Read the typed window section of an appliedTimeLimits device block.
+
+		Captured live (2026-08-25): each device block ends with a list of
+		triples ``[window_row, 4, type]`` where ``type`` is 1 for bedtime and
+		2 for school time, the same codes as the timeLimit revisions:
+
+		  [[["CAEQAg", 2, 2, [3,0], [8,0], ..., policyId], 4, 1],
+		   [["CAMQAiIk...", 2, 2, [8,0], [15,0], ..., policyId], 4, 2]]
+
+		This is Google's own typing of the rows, independent of the key
+		format, so it is the first evidence the classifier uses. Returns a
+		mapping ``row_key -> "bedtime" | "schooltime"``; empty if the section
+		is absent.
+		"""
+		found: dict[str, str] = {}
+
+		def _walk(value: Any, depth: int) -> None:
+			if depth > 6 or not isinstance(value, list):
+				return
+			if (
+				len(value) == 3
+				and isinstance(value[0], list)
+				and len(value[0]) >= 5
+				and isinstance(value[0][0], str)
+				and type(value[2]) is int
+				and value[2] in cls._WINDOW_TYPE_NAMES
+			):
+				found[value[0][0]] = cls._WINDOW_TYPE_NAMES[value[2]]
+				return
+			for child in value:
+				_walk(child, depth + 1)
+
+		_walk(device_data, 0)
+		return found
+
 	@classmethod
 	def _classify_applied_window(
 		cls,
 		item: list,
 		bedtime_rule_id: str | None = None,
 		schooltime_rule_id: str | None = None,
+		typed_windows: dict[str, str] | None = None,
 	) -> tuple[str, str]:
 		"""Tell a bedtime window row from a school time one (issue #151).
 
@@ -1196,18 +1238,19 @@ class FamilyLinkClient:
 		window_type is "bedtime", "schooltime" or "unknown".
 
 		Order of evidence:
-		1. Key prefix: CAEQ* = bedtime, CAMQ* = school time.
+		1. The typed section of the device block (see
+		   _collect_typed_windows): Google states the type of each row.
 		2. Policy id at [7], compared with the timeLimit revision ids and the
-		   known constants. This settles UUID-keyed rows, which some accounts
-		   return instead of CAEQ/CAMQ keys (issue #74).
-		3. Hours: a window that crosses midnight or starts in the evening is
+		   known constants: the rule the slot belongs to.
+		3. Key prefix: CAEQ* = bedtime, CAMQ* = school time. Kept after the
+		   policy id because the prefix only encodes the slot's rule type,
+		   which need not match the policy the slot is attached to.
+		4. Hours: a window that crosses midnight or starts in the evening is
 		   bedtime, anything else school time. Heuristic, logged as such.
 		"""
 		key = item[0] if item and isinstance(item[0], str) else ""
-		if key.startswith("CAEQ"):
-			return "bedtime", "CAEQ prefix"
-		if key.startswith("CAMQ"):
-			return "schooltime", "CAMQ prefix"
+		if typed_windows and key in typed_windows:
+			return typed_windows[key], "typed section"
 
 		policy_id = item[7] if len(item) > 7 and isinstance(item[7], str) else None
 		if policy_id:
@@ -1217,6 +1260,11 @@ class FamilyLinkClient:
 				return "bedtime", f"policy id {policy_id}"
 			if policy_id in schooltime_ids:
 				return "schooltime", f"policy id {policy_id}"
+
+		if key.startswith("CAEQ"):
+			return "bedtime", "CAEQ prefix"
+		if key.startswith("CAMQ"):
+			return "schooltime", "CAMQ prefix"
 
 		start = item[3] if len(item) > 3 else None
 		end = item[4] if len(item) > 4 else None
@@ -1433,6 +1481,10 @@ class FamilyLinkClient:
 						current_day = dt_util.now().isoweekday()
 						_LOGGER.debug(f"Device {device_id}: Current day of week: {current_day}")
 
+						# Google's own typing of the window rows (issue #151).
+						typed_windows = self._collect_typed_windows(device_data)
+						_LOGGER.debug(f"Device {device_id}: typed window section: {typed_windows}")
+
 						for idx, item in enumerate(device_data):
 							if isinstance(item, list) and len(item) >= 4:
 								_LOGGER.debug(f"Device {device_id}: item[{idx}] is list with {len(item)} elements, first element: {item[0]}")
@@ -1494,7 +1546,7 @@ class FamilyLinkClient:
 											end_time = item[4] if len(item) > 4 else None
 
 											window_type, classify_reason = self._classify_applied_window(
-												item, bedtime_rule_id, schooltime_rule_id
+												item, bedtime_rule_id, schooltime_rule_id, typed_windows
 											)
 											parse_as_bedtime = window_type == "bedtime"
 											parse_as_schooltime = window_type == "schooltime"

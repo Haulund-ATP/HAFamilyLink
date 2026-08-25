@@ -232,7 +232,19 @@ Some accounts return window rows keyed by a per-slot UUID instead of a `CAEQ*`/`
 ```
 ["8bc2de13-ee37-4005-8799-8187439db320", day, stateFlag, [21,30], [8,0], createdEpochMs, updatedEpochMs, policyId]
 ```
-The key carries no type information, and the two rows appear in **no guaranteed order**. The reliable discriminator is **`policyId` at `[7]`**: it is the same id as in the `timeLimit` revisions (`487088e7-...` = bedtime, `579e5e01-...` = school time). Classifying by list position ("first row = bedtime") swapped the two windows whenever the school time row came first (#151). The parser now classifies by prefix, then by `policyId` (matched against the revision ids and the known constants), and only as a last resort by hours (a window crossing midnight or starting at 18:00 or later is treated as bedtime).
+The key carries no type information, and the two rows appear in **no guaranteed order**. Classifying by list position ("first row = bedtime") swapped the two windows whenever the school time row came first (#151).
+
+#### 2.3.2. Typed window section (captured live 2026-08-25)
+Each device block ends with a list of triples that restates today's window rows **with their type**:
+```
+[[["CAEQAg", 2, 2, [3,0], [8,0], createdMs, updatedMs, policyId], 4, 1],
+ [["CAMQAiIk...", 2, 2, [8,0], [15,0], createdMs, updatedMs, policyId], 4, 2]]
+```
+- last element: **1 = bedtime, 2 = school time** (same codes as the `timeLimit` revisions)
+- middle element: `4`, meaning not established
+- first element: the same row as the flat one earlier in the block (same key), so the key is enough to join them
+
+The parser classifies each window row in this order: typed section by key, then `policyId` at `[7]` matched against the revision ids and the known constants (`487088e7-...` = bedtime, `579e5e01-...` = school time), then the `CAEQ`/`CAMQ` prefix, and only as a last resort the hours (a window crossing midnight or starting at 18:00 or later is treated as bedtime). The prefix sits below the policy id on purpose: it encodes the slot's rule type, not the policy the slot belongs to.
 
 #### 2.4. Lock state & Bonus override (position [0] of device block)
 Position `[0]` of each device block contains either:

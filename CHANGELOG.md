@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Bedtime and school time windows: classification now uses Google's own typing (issue #151, follow-up)** - v1.2.14 classified `appliedTimeLimits` window rows by their policy id, which was not enough: both reporters still saw `School time in Xh` for their bedtime. A live capture of the endpoint shows that every device block ends with a typed section, `[[window_row, 4, 1], [window_row, 4, 2]]`, where the last element is the window type (1 = bedtime, 2 = school time, the same codes as the `timeLimit` revisions). The parser now reads that section first and only then falls back to the policy id, the `CAEQ`/`CAMQ` key prefix and, last, the hours. The prefix was also demoted below the policy id, since it only encodes the slot's rule type rather than the policy the slot is attached to. The debug log prints the typed section and the evidence used for each row.
+
+---
+
 ## [1.2.14] - 2026-08-25
 
 ### Added
