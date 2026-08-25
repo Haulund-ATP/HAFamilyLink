@@ -22,9 +22,10 @@ What happens with **no target** differs per service, which matters in multi-chil
 |---|---|
 | Applies to **ALL** supervised children | [`block_device_for_school`](#familylinkblock_device_for_school), [`unblock_all_apps`](#familylinkunblock_all_apps), [`block_app`](#familylinkblock_app--familylinkunblock_app), [`unblock_app`](#familylinkblock_app--familylinkunblock_app), [`set_app_daily_limit`](#familylinkset_app_daily_limit), [`refresh_location`](#familylinkrefresh_location) |
 | Applies to the **first** supervised child only | [`enable_bedtime`](#familylinkenable_bedtime--familylinkdisable_bedtime), [`disable_bedtime`](#familylinkenable_bedtime--familylinkdisable_bedtime), [`set_bedtime`](#familylinkset_bedtime), [`enable_school_time`](#familylinkenable_school_time--familylinkdisable_school_time), [`disable_school_time`](#familylinkenable_school_time--familylinkdisable_school_time), [`enable_daily_limit`](#familylinkenable_daily_limit--familylinkdisable_daily_limit), [`disable_daily_limit`](#familylinkenable_daily_limit--familylinkdisable_daily_limit) |
-| Fails (a device target is mandatory) | [`add_time_bonus`](#familylinkadd_time_bonus), [`set_daily_limit`](#familylinkset_daily_limit), [`ring_device`](#familylinkring_device) |
+| Fails (a device target is mandatory) | [`add_time_bonus`](#familylinkadd_time_bonus), [`ring_device`](#familylinkring_device) |
+| Fails without a device or a child | [`set_daily_limit`](#familylinkset_daily_limit) |
 
-The device-scoped services (`add_time_bonus`, `set_daily_limit`, `ring_device`) raise an error unless a `device_id` is resolved, from the entity's attributes or the manual field. If they get a `device_id` but no `child_id`, the child resolves to the first supervised child.
+The device-scoped services (`add_time_bonus`, `ring_device`) raise an error unless a `device_id` is resolved, from the entity's attributes or the manual field. If they get a `device_id` but no `child_id`, the child resolves to the first supervised child. `set_daily_limit` also accepts a `child_id` alone, in which case it applies the limit to every device of that child.
 
 After every successful call the integration refreshes its data immediately, except `ring_device`.
 
@@ -138,14 +139,14 @@ data:
 
 ### familylink.set_daily_limit
 
-Sets the daily screen time quota of one device. A device target is mandatory.
+Sets the daily screen time quota of one device, or of every device of a child when only `child_id` is given. A device or a child target is mandatory.
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `daily_minutes` | int, 0 to 1440 | yes | - (form prefills 120) | Minutes allowed per day. `0` disables the device for the day without fully locking it |
 | `entity_id` | entity id | no | - | The device switch (`switch.<device>`) |
 | `device_id` | string | no | - | Device token, if not using the entity |
-| `child_id` | string | no | - | Child user ID; defaults to the first supervised child |
+| `child_id` | string | no | - | Child user ID. With a device target, defaults to the first supervised child. Given alone, targets every device of that child |
 
 ```yaml
 action: familylink.set_daily_limit
