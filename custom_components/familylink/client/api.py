@@ -30,9 +30,10 @@ from ..exceptions import (
 	SessionExpiredError,
 )
 from ..schedules import (
-	BEDTIME_CODE_PREFIX,
+	WINDOW_BEDTIME,
+	WINDOW_SCHOOL_TIME,
+	classify_window_row,
 	DAY_CODES,
-	SCHOOL_TIME_CODE_PREFIX,
 	parse_time_string,
 	parse_window_schedule_items,
 )
@@ -1182,12 +1183,54 @@ class FamilyLinkClient:
 	_BEDTIME_POLICY_ID = "487088e7-38b4-4f18-a5fb-4aab64ba9d2f"
 	_SCHOOLTIME_POLICY_ID = "579e5e01-8dfd-42f3-be6b-d77984842202"
 
+	# Window type codes used by the typed section of appliedTimeLimits and by
+	# the timeLimit revisions: 1 = bedtime, 2 = school time.
+	_WINDOW_TYPE_NAMES = {1: "bedtime", 2: "schooltime"}
+
+	@classmethod
+	def _collect_typed_windows(cls, device_data: Any) -> dict[str, str]:
+		"""Read the typed window section of an appliedTimeLimits device block.
+
+		Captured live (2026-08-25): each device block ends with a list of
+		triples ``[window_row, 4, type]`` where ``type`` is 1 for bedtime and
+		2 for school time, the same codes as the timeLimit revisions:
+
+		  [[["CAEQAg", 2, 2, [3,0], [8,0], ..., policyId], 4, 1],
+		   [["CAMQAiIk...", 2, 2, [8,0], [15,0], ..., policyId], 4, 2]]
+
+		This is Google's own typing of the rows, independent of the key
+		format, so it is the first evidence the classifier uses. Returns a
+		mapping ``row_key -> "bedtime" | "schooltime"``; empty if the section
+		is absent.
+		"""
+		found: dict[str, str] = {}
+
+		def _walk(value: Any, depth: int) -> None:
+			if depth > 6 or not isinstance(value, list):
+				return
+			if (
+				len(value) == 3
+				and isinstance(value[0], list)
+				and len(value[0]) >= 5
+				and isinstance(value[0][0], str)
+				and type(value[2]) is int
+				and value[2] in cls._WINDOW_TYPE_NAMES
+			):
+				found[value[0][0]] = cls._WINDOW_TYPE_NAMES[value[2]]
+				return
+			for child in value:
+				_walk(child, depth + 1)
+
+		_walk(device_data, 0)
+		return found
+
 	@classmethod
 	def _classify_applied_window(
 		cls,
 		item: list,
 		bedtime_rule_id: str | None = None,
 		schooltime_rule_id: str | None = None,
+		typed_windows: dict[str, str] | None = None,
 	) -> tuple[str, str]:
 		"""Tell a bedtime window row from a school time one (issue #151).
 
@@ -1196,18 +1239,19 @@ class FamilyLinkClient:
 		window_type is "bedtime", "schooltime" or "unknown".
 
 		Order of evidence:
-		1. Key prefix: CAEQ* = bedtime, CAMQ* = school time.
+		1. The typed section of the device block (see
+		   _collect_typed_windows): Google states the type of each row.
 		2. Policy id at [7], compared with the timeLimit revision ids and the
-		   known constants. This settles UUID-keyed rows, which some accounts
-		   return instead of CAEQ/CAMQ keys (issue #74).
-		3. Hours: a window that crosses midnight or starts in the evening is
+		   known constants: the rule the slot belongs to.
+		3. Key prefix: CAEQ* = bedtime, CAMQ* = school time. Kept after the
+		   policy id because the prefix only encodes the slot's rule type,
+		   which need not match the policy the slot is attached to.
+		4. Hours: a window that crosses midnight or starts in the evening is
 		   bedtime, anything else school time. Heuristic, logged as such.
 		"""
 		key = item[0] if item and isinstance(item[0], str) else ""
-		if key.startswith("CAEQ"):
-			return "bedtime", "CAEQ prefix"
-		if key.startswith("CAMQ"):
-			return "schooltime", "CAMQ prefix"
+		if typed_windows and key in typed_windows:
+			return typed_windows[key], "typed section"
 
 		policy_id = item[7] if len(item) > 7 and isinstance(item[7], str) else None
 		if policy_id:
@@ -1217,6 +1261,11 @@ class FamilyLinkClient:
 				return "bedtime", f"policy id {policy_id}"
 			if policy_id in schooltime_ids:
 				return "schooltime", f"policy id {policy_id}"
+
+		if key.startswith("CAEQ"):
+			return "bedtime", "CAEQ prefix"
+		if key.startswith("CAMQ"):
+			return "schooltime", "CAMQ prefix"
 
 		start = item[3] if len(item) > 3 else None
 		end = item[4] if len(item) > 4 else None
@@ -1433,6 +1482,10 @@ class FamilyLinkClient:
 						current_day = dt_util.now().isoweekday()
 						_LOGGER.debug(f"Device {device_id}: Current day of week: {current_day}")
 
+						# Google's own typing of the window rows (issue #151).
+						typed_windows = self._collect_typed_windows(device_data)
+						_LOGGER.debug(f"Device {device_id}: typed window section: {typed_windows}")
+
 						for idx, item in enumerate(device_data):
 							if isinstance(item, list) and len(item) >= 4:
 								_LOGGER.debug(f"Device {device_id}: item[{idx}] is list with {len(item)} elements, first element: {item[0]}")
@@ -1494,7 +1547,7 @@ class FamilyLinkClient:
 											end_time = item[4] if len(item) > 4 else None
 
 											window_type, classify_reason = self._classify_applied_window(
-												item, bedtime_rule_id, schooltime_rule_id
+												item, bedtime_rule_id, schooltime_rule_id, typed_windows
 											)
 											parse_as_bedtime = window_type == "bedtime"
 											parse_as_schooltime = window_type == "schooltime"
@@ -2516,7 +2569,32 @@ class FamilyLinkClient:
 		return raw[1]
 
 	@classmethod
-	def _is_bedtime_slot_row(cls, row: Any, day: int) -> bool:
+	def _find_revision_rule_id(cls, data: Any, type_flag: int, depth: int = 0) -> str | None:
+		"""Find the policy id of the revision with `type_flag` (1 bedtime, 2 school).
+
+		Revisions are 4-element rows [uuid, type_flag, state_flag, [sec, nanos]]
+		somewhere in the timeLimit payload (wrapped or not); walk the tree.
+		"""
+		if depth > 6 or not isinstance(data, list):
+			return None
+		if (
+			len(data) == 4
+			and isinstance(data[0], str)
+			and type(data[1]) is int and data[1] == type_flag
+			and type(data[2]) is int
+			and isinstance(data[3], list)
+		):
+			return data[0]
+		for item in data:
+			found = cls._find_revision_rule_id(item, type_flag, depth + 1)
+			if found:
+				return found
+		return None
+
+	@classmethod
+	def _is_bedtime_slot_row(
+		cls, row: Any, day: int, bedtime_rule_id: str | None = None
+	) -> bool:
 		"""Return true for a weekly BEDTIME row of `day`.
 
 		The same response carries three row kinds, and an id-prefix or
@@ -2526,9 +2604,11 @@ class FamilyLinkClient:
 		  school time  ["CAMQASIk…", 1, 2, [8,0], [15,0], …]  type 3, SAME shape
 		  daily limit  ["CAEQAQ", 1, 2, 480, ...]             same id, minutes
 
-		Bedtime and school-time rows live in one list, so only the decoded rule
-		type distinguishes them; the daily-limit row reuses the bedtime id, so
-		the [h, m] window shape is what excludes it.
+		Bedtime and school-time rows live in one list. A row is bedtime when
+		its policy id at [7] is the bedtime revision id (accounts on the newer
+		downtime model key bedtime slots CAMQ*, issue #151) or, failing that,
+		when its id decodes to the bedtime rule type; the daily-limit row
+		reuses the bedtime id, so the [h, m] window shape is what excludes it.
 		"""
 		if not (isinstance(row, list) and len(row) >= 5):
 			return False
@@ -2537,7 +2617,9 @@ class FamilyLinkClient:
 		# `type(...) is int` excludes bool, which would otherwise let True match day 1.
 		if not (type(row[1]) is int and row[1] == day):
 			return False
-		if cls._slot_id_rule_type(row[0]) != cls._SLOT_TYPE_BEDTIME:
+		policy_id = row[7] if len(row) > 7 and isinstance(row[7], str) else None
+		attached_to_bedtime = bool(bedtime_rule_id) and policy_id == bedtime_rule_id
+		if not attached_to_bedtime and cls._slot_id_rule_type(row[0]) != cls._SLOT_TYPE_BEDTIME:
 			return False
 
 		def _is_hm(value: Any) -> bool:
@@ -2568,19 +2650,24 @@ class FamilyLinkClient:
 		between API versions. Returns None when nothing matches so the caller
 		falls back to the static codes.
 		"""
-		if isinstance(data, list):
-			if cls._is_bedtime_slot_row(data, day):
-				return data[0]
-			for item in data:
-				found = cls._find_weekly_bedtime_slot_id(item, day)
-				if found:
-					return found
-		elif isinstance(data, dict):
-			for item in data.values():
-				found = cls._find_weekly_bedtime_slot_id(item, day)
-				if found:
-					return found
-		return None
+		bedtime_rule_id = cls._find_revision_rule_id(data, 1)
+
+		def _walk(value: Any) -> str | None:
+			if isinstance(value, list):
+				if cls._is_bedtime_slot_row(value, day, bedtime_rule_id):
+					return value[0]
+				for item in value:
+					found = _walk(item)
+					if found:
+						return found
+			elif isinstance(value, dict):
+				for item in value.values():
+					found = _walk(item)
+					if found:
+						return found
+			return None
+
+		return _walk(data)
 
 	async def _async_get_weekly_bedtime_slot_id(
 		self,
@@ -2877,33 +2964,9 @@ class FamilyLinkClient:
 				# Index 1: daily limit + school time schedules
 				# Index -1 (5): current states (revisions for bedtime/schooltime)
 
-				# Extract bedtime AND school time schedules.
-				#
-				# Both live in the SAME flat list at data[0][1], distinguished by
-				# the opaque code prefix on each item (CAEQ* = bedtime window,
-				# CAMQ* = school time window). The real (live, un-anonymized)
-				# response confirms data[0] is:
-				#   [stateFlag, [ <flat list of schedule items> ], ts, ts, 1]
-				# so data[0][0] is the INTEGER stateFlag (2=ON/1=OFF), NOT a
-				# nested list. The previous code expected data[0][0] to be a list
-				# and required `isinstance(data[0][0], list)`, which was always
-				# False here — so neither schedule was ever parsed (issue #113).
-				#
-				# data[1] is the daily-limit-MINUTES config — it does NOT contain
-				# CAMQ school-time windows, so the old school-time branch reading
-				# data[1][0][2] also found 0 schedules.
-				#
-				# Row shapes and the prefix contract live in schedules.py.
-				if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
-					bedtime_config = data[0]
-					# schedules are the flat list at index 1
-					if len(bedtime_config) > 1:
-						bedtime_schedule = parse_window_schedule_items(
-							bedtime_config[1], BEDTIME_CODE_PREFIX,
-						)
-						school_time_schedule = parse_window_schedule_items(
-							bedtime_config[1], SCHOOL_TIME_CODE_PREFIX,
-						)
+				# Bedtime and school time schedules are extracted AFTER the
+				# revisions below, because the rows are classified by the policy
+				# id they carry, which the revisions provide (issue #151).
 
 				# Parse revisions to get ON/OFF state and rule IDs
 				# Revisions are in the last element of data, containing items with format:
@@ -2972,6 +3035,39 @@ class FamilyLinkClient:
 				if not revisions_found:
 					_LOGGER.debug("No revision data found in response")
 
+				# Extract bedtime AND school time schedules.
+				#
+				# Both live in the SAME flat list at data[0][1]. The real (live,
+				# un-anonymized) response confirms data[0] is:
+				#   [stateFlag, [ <flat list of schedule items> ], ts, ts, 1]
+				# so data[0][0] is the INTEGER stateFlag (2=ON/1=OFF), NOT a
+				# nested list (issue #113).
+				#
+				# Rows are told apart by the policy id at [7], matched against
+				# the revision ids just parsed, and only then by the key prefix
+				# (CAEQ* = bedtime, CAMQ* = school time). Accounts on Google's
+				# newer downtime model key their bedtime slots CAMQ* while still
+				# attaching them to the bedtime policy, so a prefix-only split
+				# counted every bedtime slot as school time and left the bedtime
+				# schedule empty (issue #151).
+				#
+				# data[1] is the daily-limit-MINUTES config, it does NOT contain
+				# window rows. Row shapes live in schedules.py.
+				schedule_bedtime_id = bedtime_rule_id or self._BEDTIME_POLICY_ID
+				schedule_schooltime_id = schooltime_rule_id or self._SCHOOLTIME_POLICY_ID
+				if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+					bedtime_config = data[0]
+					# schedules are the flat list at index 1
+					if len(bedtime_config) > 1:
+						bedtime_schedule = parse_window_schedule_items(
+							bedtime_config[1], WINDOW_BEDTIME,
+							schedule_bedtime_id, schedule_schooltime_id,
+						)
+						school_time_schedule = parse_window_schedule_items(
+							bedtime_config[1], WINDOW_SCHOOL_TIME,
+							schedule_bedtime_id, schedule_schooltime_id,
+						)
+
 				# Today-effective bedtime state (issue #113).
 				#
 				# The weekly revision above is NOT what's applied on the child
@@ -3028,6 +3124,17 @@ class FamilyLinkClient:
 								ts = int(item[1]) if len(item) > 1 else -1
 							except (TypeError, ValueError):
 								ts = -1
+							if ts >= latest_ts:
+								latest_ts = ts
+								latest_action = action
+					# Accounts on the newer downtime model reference the bedtime
+					# rule the way school time does, [weekday, rule_uuid], instead
+					# of a CAEQxx day code (issue #151). Merge those overrides in;
+					# the most recent one wins, whatever its shape.
+					if bedtime_rule_id:
+						for _uuid, ts, action in self._parse_schooltime_overrides(
+							data, bedtime_rule_id, dt_util.now().isoweekday()
+						):
 							if ts >= latest_ts:
 								latest_ts = ts
 								latest_action = action
