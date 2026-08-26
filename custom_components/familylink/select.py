@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
@@ -15,11 +16,20 @@ from .coordinator import FamilyLinkDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(LOGGER_NAME)
 
-RESTRICTION_MAP = {
-    "Anyone": 1,
-    "Only contacts I add": 3,
-    "Contacts I add & limited groups": 4
+# Restriction levels of the trustedcontacts endpoint. 0 is what an account
+# returns before the setting has ever been touched (captured live 2026-08-26)
+# and behaves like 1, so both map to "Anyone".
+OPTION_ANYONE = "Anyone"
+OPTION_CONTACTS_ONLY = "Only contacts I add"
+OPTION_CONTACTS_AND_GROUPS = "Contacts I add & limited groups"
+
+OPTION_TO_LEVEL = {
+    OPTION_ANYONE: 1,
+    OPTION_CONTACTS_ONLY: 3,
+    OPTION_CONTACTS_AND_GROUPS: 4,
 }
+LEVEL_TO_OPTION = {0: OPTION_ANYONE, **{level: option for option, level in OPTION_TO_LEVEL.items()}}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -27,31 +37,31 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Family Link select platform."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: FamilyLinkDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities = []
-
-    # Check if data is available (just like in sensor.py)
     if not coordinator.data or "children_data" not in coordinator.data:
         _LOGGER.error("No children data in coordinator after first refresh")
         return
 
-    # Iterate through the list of children exactly as sensor.py does
-    for child_data in coordinator.data.get("children_data", []):
-        child_id = child_data["child_id"]
-        child_name = child_data["child_name"]
-        
-        _LOGGER.debug(f"Creating communication select entity for {child_name}")
-        entities.append(FamilyLinkCommunicationSelect(coordinator, child_id, child_name))
+    entities = [
+        FamilyLinkContactRestrictionSelect(
+            coordinator, child_data["child_id"], child_data["child_name"]
+        )
+        for child_data in coordinator.data.get("children_data", [])
+    ]
+    async_add_entities(entities)
 
-    async_add_entities(entities, update_before_add=True)
 
-class FamilyLinkCommunicationSelect(CoordinatorEntity, SelectEntity):
-    """Representation of a Family Link Communication Restriction select entity."""
+class FamilyLinkContactRestrictionSelect(CoordinatorEntity, SelectEntity):
+    """Who can call and text the child (Family Link "Allowed calls and texts").
 
-    _attr_options = list(RESTRICTION_MAP.keys())
+    The level is fetched by the coordinator with the other per-child data, so
+    this entity only reads coordinator.data like the rest of the platform and
+    benefits from its cache fallback and session-expiry handling.
+    """
+
+    _attr_options = list(OPTION_TO_LEVEL)
     _attr_icon = "mdi:phone-lock"
-    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -61,57 +71,68 @@ class FamilyLinkCommunicationSelect(CoordinatorEntity, SelectEntity):
     ) -> None:
         """Initialize the select entity."""
         super().__init__(coordinator)
-        self.child_id = child_id
-        
-        self._attr_name = "Allowed Calls & Texts"
-        self._attr_unique_id = f"{child_id}_communication_restriction"
-        self._attr_current_option = None
-        
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, child_id)},
-            name=child_name,
+        self._child_id = child_id
+        self._child_name = child_name
+        self._attr_name = f"{child_name} Allowed Calls & Texts"
+        self._attr_unique_id = f"{DOMAIN}_{child_id}_allowed_calls_texts"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information for this child."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._child_id)},
+            name=f"{self._child_name} (Family Link)",
             manufacturer="Google",
             model="Family Link Account",
         )
 
+    def _get_child_data(self) -> dict[str, Any] | None:
+        """Get coordinator data for this child."""
+        if not self.coordinator.data or "children_data" not in self.coordinator.data:
+            return None
+        for child_data in self.coordinator.data["children_data"]:
+            if child_data["child_id"] == self._child_id:
+                return child_data
+        return None
+
     @property
     def current_option(self) -> str | None:
-        """Return the current selected option."""
-        return self._attr_current_option
+        """Return the option matching the level last read by the coordinator."""
+        child_data = self._get_child_data()
+        if not child_data:
+            return None
+        level = child_data.get("contact_restriction")
+        if level is None:
+            return None
+        option = LEVEL_TO_OPTION.get(level)
+        if option is None:
+            _LOGGER.debug(
+                f"Unknown contact restriction level {level} for {self._child_name}"
+            )
+        return option
 
-    async def async_added_to_hass(self) -> None:
-        """When entity is added to hass, fetch the initial state."""
-        await super().async_added_to_hass()
-        await self._async_update_state_from_api()
-
-    async def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        # Every time the coordinator refreshes, we fetch our setting too
-        await self._async_update_state_from_api()
-        self.async_write_ha_state()
-
-    async def _async_update_state_from_api(self) -> None:
-        """Fetch the latest restriction state from the API."""
-        try:
-            level = await self.coordinator.client.get_contact_restriction(self.child_id)
-            if level is not None:
-                # Find the string name ("Anyone", etc.) that matches the returned integer
-                for option_name, option_level in RESTRICTION_MAP.items():
-                    if option_level == level:
-                        self._attr_current_option = option_name
-                        break
-        except Exception as err:
-            _LOGGER.error(f"Failed to fetch communication state for {self.child_id}: {err}")
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the child ids so services can target this child."""
+        attributes: dict[str, Any] = {
+            "child_id": self._child_id,
+            "child_name": self._child_name,
+        }
+        child_data = self._get_child_data()
+        if child_data:
+            attributes["restriction_level"] = child_data.get("contact_restriction")
+        return attributes
 
     async def async_select_option(self, option: str) -> None:
-        """Change the selected option."""
-        level = RESTRICTION_MAP[option]
-        
-        success = await self.coordinator.client.set_contact_restriction(self.child_id, level)
-        
-        if success:
-            _LOGGER.debug(f"Successfully set {self.child_id} communication to {option}")
-            self._attr_current_option = option
-            self.async_write_ha_state()
-        else:
-            _LOGGER.error(f"Failed to update communication settings for {self.child_id}")
+        """Change who can call and text the child."""
+        level = OPTION_TO_LEVEL[option]
+        success = await self.coordinator.client.async_set_contact_restriction(
+            level, account_id=self._child_id
+        )
+        if not success:
+            _LOGGER.error(
+                f"Failed to set allowed calls and texts to '{option}' for {self._child_name}"
+            )
+            return
+        _LOGGER.info(f"Set allowed calls and texts to '{option}' for {self._child_name}")
+        await self.coordinator.async_request_refresh()
