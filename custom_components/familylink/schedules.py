@@ -120,12 +120,57 @@ def get_time_zone(value: str | None) -> ZoneInfo | None:
 		return None
 
 
-def parse_window_schedule_items(items: Any, code_prefix: str) -> list[dict[str, Any]]:
+WINDOW_BEDTIME = "bedtime"
+WINDOW_SCHOOL_TIME = "schooltime"
+
+
+def classify_window_row(
+	row: Any,
+	bedtime_rule_id: str | None = None,
+	schooltime_rule_id: str | None = None,
+) -> str | None:
+	"""Tell which rule a timeLimit / appliedTimeLimits window row belongs to.
+
+	Returns WINDOW_BEDTIME, WINDOW_SCHOOL_TIME or None.
+
+	The policy id at index 7 is the authoritative evidence: it is the id of the
+	rule the slot is attached to, and it matches the revision ids. The key
+	prefix comes second because it only encodes the slot *format*: accounts on
+	Google's newer downtime model store bedtime slots with a `CAMQ...` key (the
+	school time shape, with an embedded slot UUID) while still attaching them to
+	the bedtime policy (issue #151). On those accounts a prefix-only reader
+	counts every bedtime slot as school time.
+	"""
+	if not (isinstance(row, list) and len(row) >= 5 and isinstance(row[0], str)):
+		return None
+
+	policy_id = row[7] if len(row) > 7 and isinstance(row[7], str) else None
+	if policy_id:
+		if bedtime_rule_id and policy_id == bedtime_rule_id:
+			return WINDOW_BEDTIME
+		if schooltime_rule_id and policy_id == schooltime_rule_id:
+			return WINDOW_SCHOOL_TIME
+
+	if row[0].startswith(BEDTIME_CODE_PREFIX):
+		return WINDOW_BEDTIME
+	if row[0].startswith(SCHOOL_TIME_CODE_PREFIX):
+		return WINDOW_SCHOOL_TIME
+	return None
+
+
+def parse_window_schedule_items(
+	items: Any,
+	window_type: str,
+	bedtime_rule_id: str | None = None,
+	schooltime_rule_id: str | None = None,
+) -> list[dict[str, Any]]:
 	"""Parse bedtime or school time rows from a timeLimit schedule list.
 
-	Both kinds share one list; `code_prefix` selects which. Rows that don't match
-	the expected shape are skipped rather than raising, because a Google-side
-	change should degrade one slot rather than the whole fetch.
+	Both kinds share one list; `window_type` (WINDOW_BEDTIME or
+	WINDOW_SCHOOL_TIME) selects which, using classify_window_row: policy id
+	first, key prefix second. Rows that don't match the expected shape are
+	skipped rather than raising, because a Google-side change should degrade
+	one slot rather than the whole fetch.
 	"""
 	schedules: list[dict[str, Any]] = []
 
@@ -144,7 +189,7 @@ def parse_window_schedule_items(items: Any, code_prefix: str) -> list[dict[str, 
 
 		if not (
 			isinstance(code, str)
-			and code.startswith(code_prefix)
+			and classify_window_row(item, bedtime_rule_id, schooltime_rule_id) == window_type
 			and _is_int(day)
 			and day in DAY_NAMES
 			and _is_int(state_flag)
