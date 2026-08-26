@@ -3221,3 +3221,102 @@ class FamilyLinkClient:
 			del self._cookie_dict
 		if hasattr(self, '_cookie_header'):
 			del self._cookie_header
+
+	async def async_get_contact_restriction(self, account_id: str | None = None) -> int | None:
+		"""Read who can call and text the child (Family Link "Allowed calls and texts").
+
+		GET /people/{id}/trustedcontacts returns (captured live 2026-08-26):
+		  [[null, "<ts>"], <contacts or null>, <level>, "<country>", "<n>"]
+		The level at index [2] is 0 when the setting has never been touched
+		(behaves like 1), 1 = anyone, 3 = only contacts I add, 4 = contacts I
+		add and limited groups. Returns None when the level cannot be read.
+		"""
+		if not self.is_authenticated():
+			raise AuthenticationError("Not authenticated")
+
+		if account_id is None:
+			account_id = await self.async_get_supervised_child_id()
+
+		try:
+			session = await self._get_session()
+			cookie_header = self._get_cookie_header()
+			url = self._people_url(account_id, "trustedcontacts")
+
+			async with session.get(
+				url,
+				headers={
+					"Content-Type": "application/json+protobuf",
+					"Cookie": cookie_header,
+				},
+			) as response:
+				if response.status == 401:
+					_LOGGER.error("✗ 401 Unauthorized - Session expired fetching contact restriction")
+					raise SessionExpiredError("Session expired, please re-authenticate")
+				if response.status != 200:
+					response_text = await response.text()
+					_LOGGER.error(f"Failed to fetch contact restriction {response.status}: {response_text}")
+					raise NetworkError(f"Failed to fetch contact restriction: HTTP {response.status}")
+
+				data = await response.json()
+				_LOGGER.debug(f"Contact restriction response: {data}")
+
+				if isinstance(data, list) and len(data) > 2 and type(data[2]) is int:
+					return data[2]
+				_LOGGER.warning(f"Unexpected trustedcontacts response shape: {str(data)[:200]}")
+				return None
+
+		except (SessionExpiredError, NetworkError):
+			raise
+		except Exception as err:
+			_LOGGER.error(f"Error fetching contact restriction: {err}")
+			raise NetworkError(f"Error fetching contact restriction: {err}") from err
+
+	async def async_set_contact_restriction(
+		self, restriction_level: int, account_id: str | None = None
+	) -> bool:
+		"""Set who can call and text the child.
+
+		POST /people/{id}/trustedcontacts:update with
+		[null, childId, null, null, level]; level 1 = anyone, 3 = only contacts
+		I add, 4 = contacts I add and limited groups. Returns True on HTTP 200.
+		"""
+		if not self.is_authenticated():
+			raise AuthenticationError("Not authenticated")
+
+		if account_id is None:
+			account_id = await self.async_get_supervised_child_id()
+
+		try:
+			session = await self._get_session()
+			cookie_header = self._get_cookie_header()
+			url = self._people_url(account_id, "trustedcontacts:update")
+			payload = json.dumps([None, account_id, None, None, restriction_level])
+
+			_LOGGER.debug(f"Setting contact restriction level to {restriction_level} for {account_id}")
+
+			async with session.post(
+				url,
+				headers={
+					"Content-Type": "application/json+protobuf",
+					"Cookie": cookie_header,
+				},
+				data=payload,
+			) as response:
+				if response.status == 401:
+					_LOGGER.error("✗ 401 Unauthorized - Session expired setting contact restriction")
+					raise SessionExpiredError("Session expired, please re-authenticate")
+				if response.status != 200:
+					response_text = await response.text()
+					_LOGGER.error(
+						f"Failed to set contact restriction (HTTP {response.status}): {response_text}"
+					)
+					return False
+
+				_LOGGER.info(f"Set contact restriction to {restriction_level} for {account_id}")
+				return True
+
+		except SessionExpiredError:
+			raise
+		except Exception as err:
+			_LOGGER.error(f"Unexpected error setting contact restriction: {err}")
+			return False
