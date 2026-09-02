@@ -1,5 +1,5 @@
 {
-  "name": "Google Family Link",
-  "url": "https://github.com/noiwid/HAFamilyLink",
-  "maintainer": "noiwid"
+  "name": "Google Family Link (hardened fork)",
+  "url": "https://github.com/Haulund-ATP/HAFamilyLink",
+  "maintainer": "Haulund-ATP"
 }
