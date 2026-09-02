@@ -1,7 +1,7 @@
 {
   "build_from": {
-    "amd64": "ghcr.io/hassio-addons/debian-base:7.3.3",
-    "aarch64": "ghcr.io/hassio-addons/debian-base:7.3.3"
+    "amd64": "ghcr.io/hassio-addons/debian-base:7.3.3@sha256:6984c423247ace33db70c726ff9de8d7935475cbe112f249674b2017ed05fd0e",
+    "aarch64": "ghcr.io/hassio-addons/debian-base:7.3.3@sha256:6984c423247ace33db70c726ff9de8d7935475cbe112f249674b2017ed05fd0e"
   },
   "args": {}
 }

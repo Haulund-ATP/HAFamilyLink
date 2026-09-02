@@ -1,0 +1,13 @@
+# The shell scripts in this repository are copied into Linux container images.
+# A CRLF checkout on Windows would produce `bash: $'\r': command not found` at
+# container start, so their line endings are pinned regardless of a
+# contributor's core.autocrlf setting.
+*.sh text eol=lf
+familylink-playwright/rootfs/etc/services.d/familylink/run text eol=lf
+familylink-playwright/rootfs/etc/services.d/familylink/finish text eol=lf
+
+# Dockerfiles and the lock file are consumed by the same builds.
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf
+requirements*.txt text eol=lf
+requirements*.in text eol=lf

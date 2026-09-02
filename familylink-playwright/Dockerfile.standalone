@@ -1,17 +1,23 @@
-FROM debian:12-slim
+# Pinned by digest as well as tag so the build is reproducible and a moved or
+# compromised tag cannot silently change the base image.
+FROM debian:12-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 # Set shell
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Install system dependencies required for Playwright and Chromium
+# Install system dependencies required for Playwright and Chromium.
+#
+# python3-websockify is deliberately absent: the unauthenticated websockify
+# server on port 6080 has been replaced by the WebSocket bridge inside the
+# application, which is covered by the service's own authentication. The noVNC
+# client assets are still needed and come from the `novnc` package.
+# util-linux provides setpriv, used to drop privileges at startup.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         python3-dev \
         curl \
-        nodejs \
-        npm \
         ca-certificates \
         fonts-liberation \
         libnss3 \
@@ -28,50 +34,74 @@ RUN apt-get update \
         x11vnc \
         tigervnc-standalone-server \
         novnc \
-        python3-websockify \
         fluxbox \
         xterm \
         dbus \
+        procps \
+        util-linux \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Dedicated unprivileged account for the service, the X server and Chromium.
+RUN groupadd --system --gid 1000 familylink \
+    && useradd --system --uid 1000 --gid familylink \
+        --home-dir /var/lib/familylink --create-home --shell /usr/sbin/nologin \
+        familylink
 
 # Set environment variables for Playwright
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
-# Default environment variables (can be overridden)
+# Default environment variables (can be overridden).
+# There is deliberately no VNC_PASSWORD: the VNC server listens on loopback
+# with no RFB authentication and is only reachable through the application's
+# authenticated /vnc endpoint. The API token is generated on first start and
+# persisted to the data volume; set API_TOKEN to supply your own.
 ENV LOG_LEVEL=info
 ENV AUTH_TIMEOUT=300
 ENV SESSION_DURATION=86400
-ENV VNC_PASSWORD=familylink
+ENV COOKIE_ALLOWLIST_MODE=strict
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+# Install Python dependencies from the hashed lock file. --require-hashes makes
+# pip verify every artefact and refuses anything that does not match, so a
+# compromised index or mirror cannot substitute a package.
+COPY requirements.txt requirements.in ./
+RUN pip3 install --no-cache-dir --break-system-packages \
+        --require-hashes -r requirements.txt
 
-# Install Playwright and its browsers
-# Debian-based image supports Playwright on ARM64
-RUN pip3 install --no-cache-dir --break-system-packages playwright && \
-    playwright install --with-deps chromium
+# Install the Chromium build matching the pinned Playwright version, then make
+# it readable by the unprivileged user and enable the SUID sandbox helper, which
+# lets Chromium sandbox its renderers on kernels that refuse unprivileged user
+# namespaces.
+RUN playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright \
+    && find /ms-playwright -name 'chrome[-_]sandbox' -type f \
+        -exec chown root:root {} \; -exec chmod 4755 {} \;
 
 # Copy application code
 COPY app/ /app/app/
 
-# Copy standalone startup script and welcome banner helper
+# Startup, display-stack control and the welcome banner
 COPY run-standalone.sh /usr/local/bin/run-standalone.sh
+COPY rootfs/usr/local/bin/display-stack.sh /usr/local/bin/display-stack.sh
 COPY welcome-banner.sh /usr/local/bin/welcome-banner.sh
-RUN chmod +x /usr/local/bin/run-standalone.sh /usr/local/bin/welcome-banner.sh
+RUN chmod +x /usr/local/bin/run-standalone.sh \
+        /usr/local/bin/display-stack.sh \
+        /usr/local/bin/welcome-banner.sh
 
-# Create necessary directories
-RUN mkdir -p /share/familylink && \
-    chmod 755 /share/familylink
+# Create the data directory with restrictive permissions. Note that the key and
+# the ciphertext both live here: see the security notes in DOCKER_STANDALONE.md.
+RUN mkdir -p /share/familylink \
+    && chown familylink:familylink /share/familylink \
+    && chmod 700 /share/familylink
 
-# Expose ports
-EXPOSE 8099 6080
+# Only the web UI, REST API and browser view. Port 6080 is gone.
+EXPOSE 8099
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
@@ -81,8 +111,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 LABEL \
     org.opencontainers.image.title="Google Family Link Auth (Standalone)" \
     org.opencontainers.image.description="Standalone authentication service for Google Family Link" \
-    org.opencontainers.image.version="1.8.0" \
+    org.opencontainers.image.version="2.0.0" \
     org.opencontainers.image.source="https://github.com/noiwid/HAFamilyLink"
 
-# Start the service
+# The entrypoint starts as root only to prepare the data directory and the
+# D-Bus socket, then drops to the familylink user with setpriv.
 CMD ["/usr/local/bin/run-standalone.sh"]
