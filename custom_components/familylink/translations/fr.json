@@ -1,101 +1,116 @@
 {
-	"options": {
-		"step": {
-			"init": {
-				"title": "Configurer Family Link",
-				"description": "Modifier les paramètres de l'intégration. Les changements prendront effet après la sauvegarde.",
-				"data": {
-					"update_interval": "Intervalle de mise à jour (secondes)",
-					"timeout": "Délai d'expiration des requêtes (secondes)",
-					"enable_location_tracking": "Activer le suivi GPS"
-				},
-				"data_description": {
-					"update_interval": "Fréquence de récupération des données depuis Google (30-3600 secondes)",
-					"enable_location_tracking": "Lorsque activé, chaque interrogation de position peut envoyer une notification sur l'appareil de l'enfant"
-				}
-			}
-		}
-	},
-	"config": {
-		"step": {
-			"user": {
-				"title": "Google Family Link",
-				"description": "Choisissez comment vous connecter au service Family Link Auth.",
-				"menu_options": {
-					"auto_detect": "Détection automatique (module complémentaire ou fichier local)",
-					"manual_url": "Configuration manuelle de l'URL (Docker autonome)"
-				}
-			},
-			"manual_url": {
-				"title": "URL du serveur d'authentification",
-				"description": "Aucune source d'authentification locale n'a été détectée. Veuillez entrer l'URL de votre conteneur Family Link Auth.\n\nExemple : `http://192.168.1.100:8099` ou `http://familylink-auth:8099`\n\nSi le serveur d'authentification exige une clé API (conteneur v1.7.0+), ajoutez-la à l'URL : `http://192.168.1.100:8099?api_key=<clé>` (clé dans le fichier `data/api_key` du conteneur).",
-				"data": {
-					"auth_url": "URL du serveur d'authentification"
-				}
-			},
-			"configure": {
-				"title": "Configurer Family Link",
-				"description": "Source d'authentification : {auth_source}",
-				"data": {
-					"name": "Nom de l'intégration",
-					"update_interval": "Intervalle de mise à jour (secondes)",
-					"timeout": "Délai d'expiration des requêtes (secondes)",
-					"enable_location_tracking": "Activer le suivi GPS"
-				},
-				"data_description": {
-					"enable_location_tracking": "Lorsque activé, chaque interrogation de position peut envoyer une notification sur l'appareil de l'enfant. Désactivé par défaut pour la confidentialité."
-				}
-			}
-		},
-		"error": {
-			"cannot_connect": "Impossible de se connecter au serveur d'authentification. Vérifiez l'URL et assurez-vous que le conteneur est en cours d'exécution.",
-			"invalid_auth": "Aucun cookie trouvé. Veuillez d'abord vous authentifier via le module complémentaire ou le conteneur Family Link Auth.",
-			"url_required": "L'URL est requise",
-			"no_cookies": "Le serveur est accessible mais aucun cookie n'a été trouvé. Veuillez d'abord vous authentifier via l'interface web.",
-			"invalid_api_key": "Le serveur exige une clé API. Ajoutez ?api_key=<clé> à l'URL, où <clé> est la valeur de la variable d'environnement API_KEY définie sur le conteneur d'authentification.",
-			"unknown": "Une erreur inattendue s'est produite"
-		},
-		"abort": {
-			"already_configured": "L'intégration est déjà configurée",
-			"invalid_config": "Configuration invalide"
-		}
-	},
-	"entity": {
-		"sensor": {
-			"daily_screen_time": {
-				"name": "Temps d'écran quotidien"
-			},
-			"screen_time_formatted": {
-				"name": "Temps d'écran (formaté)"
-			},
-			"installed_apps": {
-				"name": "Applications installées"
-			},
-			"blocked_apps": {
-				"name": "Applications bloquées"
-			},
-			"apps_with_time_limits": {
-				"name": "Applications avec limite de temps"
-			},
-			"device_count": {
-				"name": "Nombre d'appareils"
-			},
-			"child_info": {
-				"name": "Infos enfant"
-			},
-			"top_app": {
-				"name": "Top application {rank}"
-			}
-		},
-		"switch": {
-			"device_lock": {
-				"name": "Verrouillage appareil"
-			}
-		},
-		"device_tracker": {
-			"location": {
-				"name": "Localisation"
-			}
-		}
-	}
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configurer Family Link",
+        "description": "Modifier les paramètres de l'intégration. Les changements prendront effet après la sauvegarde.",
+        "data": {
+          "update_interval": "Intervalle de mise à jour (secondes)",
+          "timeout": "Délai d'expiration des requêtes (secondes)",
+          "enable_location_tracking": "Activer le suivi GPS",
+          "api_token": "Auth service API token"
+        },
+        "data_description": {
+          "update_interval": "Fréquence de récupération des données depuis Google (30-3600 secondes)",
+          "enable_location_tracking": "Lorsque activé, chaque interrogation de position peut envoyer une notification sur l'appareil de l'enfant",
+          "api_token": "Leave empty to keep the stored token. Only needed for a standalone auth container; add-on installs read it automatically from /share/familylink/api_key."
+        }
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Google Family Link",
+        "description": "Choisissez comment vous connecter au service Family Link Auth.",
+        "menu_options": {
+          "auto_detect": "Détection automatique (module complémentaire ou fichier local)",
+          "manual_url": "Configuration manuelle de l'URL (Docker autonome)"
+        }
+      },
+      "manual_url": {
+        "title": "URL du serveur d'authentification",
+        "description": "No local authentication source was detected. Please enter the URL of your Family Link Auth container.\n\nExample: `http://192.168.1.100:8099` or `http://familylink-auth:8099`\n\nEnter the service token in the separate field below - do not append `?api_key=` to the URL. A pasted legacy URL that still contains it is migrated automatically.",
+        "data": {
+          "auth_url": "URL du serveur d'authentification",
+          "api_token": "Auth service API token"
+        },
+        "data_description": {
+          "api_token": "The token from the auth container's data/api_key file, or the value of its API_TOKEN environment variable. It is sent as an X-API-Key header - never append it to the URL."
+        }
+      },
+      "configure": {
+        "title": "Configurer Family Link",
+        "description": "Source d'authentification : {auth_source}",
+        "data": {
+          "name": "Nom de l'intégration",
+          "update_interval": "Intervalle de mise à jour (secondes)",
+          "timeout": "Délai d'expiration des requêtes (secondes)",
+          "enable_location_tracking": "Activer le suivi GPS"
+        },
+        "data_description": {
+          "enable_location_tracking": "Lorsque activé, chaque interrogation de position peut envoyer une notification sur l'appareil de l'enfant. Désactivé par défaut pour la confidentialité."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Google Family Link",
+        "description": "The stored Google session has expired. Sign in again in the Family Link Auth add-on (or the standalone container's web UI), then submit this form.\n\nOnly fill in the token if it has changed.",
+        "data": {
+          "api_token": "Auth service API token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to authentication server. Please verify the URL and ensure the container is running.",
+      "invalid_auth": "No cookies found. Please authenticate first using the Family Link Auth add-on or container.",
+      "url_required": "URL is required",
+      "no_cookies": "Server is reachable but no cookies found. Please authenticate first via the web interface.",
+      "invalid_api_key": "The auth service rejected the token. Copy it from the container's data/api_key file (or its API_TOKEN variable) into the token field. It must not be part of the URL.",
+      "unknown": "Unexpected error occurred",
+      "session_expired": "The stored Google session has expired and was deleted. Sign in again through the Family Link Auth add-on or container, then retry."
+    },
+    "abort": {
+      "already_configured": "L'intégration est déjà configurée",
+      "invalid_config": "Configuration invalide",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "daily_screen_time": {
+        "name": "Temps d'écran quotidien"
+      },
+      "screen_time_formatted": {
+        "name": "Temps d'écran (formaté)"
+      },
+      "installed_apps": {
+        "name": "Applications installées"
+      },
+      "blocked_apps": {
+        "name": "Applications bloquées"
+      },
+      "apps_with_time_limits": {
+        "name": "Applications avec limite de temps"
+      },
+      "device_count": {
+        "name": "Nombre d'appareils"
+      },
+      "child_info": {
+        "name": "Infos enfant"
+      },
+      "top_app": {
+        "name": "Top application {rank}"
+      }
+    },
+    "switch": {
+      "device_lock": {
+        "name": "Verrouillage appareil"
+      }
+    },
+    "device_tracker": {
+      "location": {
+        "name": "Localisation"
+      }
+    }
+  }
 }

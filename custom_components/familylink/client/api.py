@@ -16,7 +16,8 @@ import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from ..auth.addon_client import AddonCookieClient
+from .. import redact
+from ..auth.addon_client import AddonCookieClient, CookiesExpiredError
 from ..const import (
 	DEVICE_LOCK_ACTION,
 	DEVICE_RING_ACTION_CODE,
@@ -70,9 +71,15 @@ class FamilyLinkClient:
 		"""Initialize the Family Link client."""
 		self.hass = hass
 		self.config = config
-		# Get auth_url from config if available (for Docker standalone mode)
+		# Get auth_url from config if available (for Docker standalone mode).
+		# The service token is a separate field: it is sent as an X-API-Key
+		# header and must never be appended to the URL.
 		auth_url = config.get("auth_url")
-		self.addon_client = AddonCookieClient(hass, auth_url=auth_url)
+		self.addon_client = AddonCookieClient(
+			hass,
+			auth_url=auth_url,
+			api_token=config.get("api_token"),
+		)
 		self._session: aiohttp.ClientSession | None = None
 		self._session_lock = asyncio.Lock()
 		self._session_created_at: float = 0  # Track session age for SAPISIDHASH refresh
@@ -99,21 +106,32 @@ class FamilyLinkClient:
 		# tries API then file fallback)
 		_LOGGER.debug("Loading cookies from Family Link Auth add-on")
 
-		self._cookies = await self.addon_client.load_cookies()
+		try:
+			self._cookies = await self.addon_client.load_cookies()
+		except CookiesExpiredError as err:
+			# The auth service enforced session_duration and deleted the
+			# stored session. This is a re-authentication prompt, not a
+			# transient network error, so it is raised as SessionExpiredError
+			# and reaches the user as a persistent notification.
+			raise SessionExpiredError(str(err)) from err
 
 		if not self._cookies:
-			if getattr(self.addon_client, "last_fetch_status", None) == 403:
+			if getattr(self.addon_client, "last_fetch_status", None) in (401, 403):
 				raise AuthenticationError(
-					"Auth server rejected the request (403): the cookie endpoint "
-					"requires an API key. Append ?api_key=<key> to the configured "
-					"auth URL. The key is in the auth container's data directory "
-					"(./data/api_key), or set it via the API_KEY environment variable."
+					"The auth service rejected the request: it needs the service "
+					"token. Enter it in the integration's options (Settings > "
+					"Devices & services > Google Family Link > Configure). For an "
+					"add-on install it is read automatically from "
+					"/share/familylink/api_key; for a standalone container it is "
+					"in the api_key file of the data directory. Do not put it in "
+					"the URL."
 				)
 			raise AuthenticationError(
 				"No cookies found. Please use the Family Link Auth add-on to authenticate first."
 			)
 
-		_LOGGER.info(f"Successfully loaded {len(self._cookies)} cookies from add-on")
+		redact.register_cookie_secrets(self._cookies)
+		_LOGGER.info("Successfully loaded %d cookies from add-on", len(self._cookies))
 
 	async def async_refresh_session(self) -> None:
 		"""Refresh the authentication session."""
@@ -149,9 +167,20 @@ class FamilyLinkClient:
 		"""
 		timestamp = int(time.time())  # Unix timestamp in seconds
 		to_hash = f"{timestamp} {sapisid} {origin}"
-		sha1_hash = hashlib.sha1(to_hash.encode("utf-8")).hexdigest()
+		# SHA-1 is not a free choice here: Google's SAPISIDHASH scheme defines
+		# the value as SHA-1 over "<timestamp> <SAPISID> <origin>", and any
+		# other digest is rejected by the API. It is used as an authentication
+		# token derived from a secret, not as a collision-resistant hash, so
+		# SHA-1's collision weakness does not apply to this construction.
+		# Bandit flags every SHA-1 use; suppressed narrowly on this line only.
+		# usedforsecurity=False documents the intent to both readers and scanners.
+		sha1_hash = hashlib.sha1(  # noqa: S324
+			to_hash.encode("utf-8"), usedforsecurity=False
+		).hexdigest()
 		sapisidhash = f"{timestamp}_{sha1_hash}"
-		_LOGGER.debug(f"Generated SAPISIDHASH with timestamp={timestamp}, hash={sha1_hash[:16]}...")
+		# The digest is a bearer credential for the session: log neither it nor
+		# any prefix of it.
+		_LOGGER.debug("Generated SAPISIDHASH (timestamp=%s)", timestamp)
 		return sapisidhash
 
 	def _get_cookies_dict(self) -> dict[str, str]:
@@ -349,7 +378,7 @@ class FamilyLinkClient:
 
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"API Error {response.status}: {response_text[:500]}")
+					_LOGGER.error(f"API Error {response.status}: {redact.redact_response(response_text)}")
 
 				response.raise_for_status()
 				data = await response.json()
@@ -384,7 +413,11 @@ class FamilyLinkClient:
 			supervision_info = member.get("memberSupervisionInfo")
 			if supervision_info and supervision_info.get("isSupervisedMember"):
 				self._account_id = member["userId"]
-				_LOGGER.info(f"Found supervised child: {member['profile']['displayName']} (ID: {self._account_id})")
+				redact.register_identifier(self._account_id)
+				redact.register_identifier(
+					member.get("profile", {}).get("displayName")
+				)
+				_LOGGER.info("Found supervised child")
 				return self._account_id
 
 		raise ValueError("No supervised child found in family")
@@ -407,7 +440,9 @@ class FamilyLinkClient:
 				child_id = member["userId"]
 				child_name = member.get("profile", {}).get("displayName", "Unknown")
 				children.append({"id": child_id, "name": child_name})
-				_LOGGER.debug(f"Found supervised child: {child_name} (ID: {child_id})")
+				redact.register_identifier(child_id)
+				redact.register_identifier(child_name)
+				_LOGGER.debug("Found a supervised child")
 
 		if not children:
 			raise ValueError("No supervised children found in family")
@@ -458,7 +493,7 @@ class FamilyLinkClient:
 				_LOGGER.debug(f"Response status: {response.status}")
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"API Error {response.status}: {response_text}")
+					_LOGGER.error(f"API Error {response.status}: {redact.redact_response(response_text)}")
 					_LOGGER.error(f"Request URL was: {url}")
 
 				response.raise_for_status()
@@ -615,7 +650,7 @@ class FamilyLinkClient:
 				("supportedConsents", "SUPERVISED_LOCATION_SHARING"),
 			]
 
-			_LOGGER.debug(f"Fetching location for child {account_id} (refresh={refresh})")
+			_LOGGER.debug("Fetching location (refresh=%s)", refresh)
 
 			async with session.get(
 				url,
@@ -629,36 +664,44 @@ class FamilyLinkClient:
 					_LOGGER.error("✗ 401 Unauthorized - Session expired fetching location")
 					raise SessionExpiredError("Session expired, please re-authenticate")
 				if response.status == 404:
-					_LOGGER.warning(f"Location not available for child {account_id}")
+					_LOGGER.warning("Location not available for the supervised child")
 					return None
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"Failed to fetch location (HTTP {response.status}): {response_text}")
+					_LOGGER.error(f"Failed to fetch location (HTTP {response.status}): {redact.redact_response(response_text)}")
 					return None
 
 				data = await response.json()
-				_LOGGER.debug(f"Location response: {str(data)[:500]}")
+				# The response body contains the child's live coordinates and
+				# the address of any saved place they are at. Log only its
+				# shape, never its content.
+				_LOGGER.debug(
+					"Location response received (%d top-level elements)",
+					len(data) if isinstance(data, list) else 1,
+				)
 
 				# Parse the protobuf-like JSON response
 				# Structure: [[null, timestamp], [child_id, status, [location_data], ...]]
 				if not isinstance(data, list) or len(data) < 2:
-					_LOGGER.warning(f"Unexpected location response structure: {data}")
+					_LOGGER.warning(
+						"Unexpected location response structure (%s)", type(data).__name__
+					)
 					return None
 
 				child_data = data[1] if len(data) > 1 else None
 				if not isinstance(child_data, list) or len(child_data) < 3:
-					_LOGGER.warning(f"No location data in response for child {account_id}")
+					_LOGGER.warning("No location data in the response")
 					return None
 
 				location_array = child_data[2] if len(child_data) > 2 else None
 				if not isinstance(location_array, list) or len(location_array) < 2:
-					_LOGGER.warning(f"Invalid location array for child {account_id}")
+					_LOGGER.warning("Invalid location array in the response")
 					return None
 
 				# Extract coordinates [lat, lng]
 				coords = location_array[0] if len(location_array) > 0 else None
 				if not isinstance(coords, list) or len(coords) < 2:
-					_LOGGER.warning(f"Invalid coordinates for child {account_id}")
+					_LOGGER.warning("Invalid coordinates in the response")
 					return None
 
 				latitude = coords[0]
@@ -718,11 +761,14 @@ class FamilyLinkClient:
 					"battery_level": battery_level,
 				}
 
+				# Coordinates, the saved-place name/address and the device id
+				# identify a child's whereabouts, so only the non-identifying
+				# quality signals are logged.
 				_LOGGER.debug(
-					f"Location for child {account_id}: "
-					f"({latitude}, {longitude}) accuracy={accuracy}m, "
-					f"place={place_name or 'unknown'}, device={source_device_id}, "
-					f"battery={battery_level}%"
+					"Location received: accuracy=%sm, place_known=%s, battery=%s%%",
+					accuracy,
+					place_name is not None,
+					battery_level,
 				)
 
 				return result
@@ -730,7 +776,7 @@ class FamilyLinkClient:
 		except SessionExpiredError:
 			raise  # Re-raise to trigger auth notification
 		except Exception as err:
-			_LOGGER.error(f"Failed to fetch location for child {account_id}: {err}")
+			_LOGGER.error("Failed to fetch location: %s", err)
 			return None
 
 	async def async_block_app(self, package_name: str, account_id: str | None = None) -> bool:
@@ -1099,7 +1145,7 @@ class FamilyLinkClient:
 
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"Device control failed {response.status}: {response_text}")
+					_LOGGER.error(f"Device control failed {response.status}: {redact.redact_response(response_text)}")
 					return False
 
 				response_data = await response.json()
@@ -1164,7 +1210,7 @@ class FamilyLinkClient:
 
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"Device ring failed {response.status}: {response_text}")
+					_LOGGER.error(f"Device ring failed {response.status}: {redact.redact_response(response_text)}")
 					return False
 
 				response_data = await response.json()
@@ -1350,7 +1396,7 @@ class FamilyLinkClient:
 					raise SessionExpiredError("Session expired, please re-authenticate")
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"Failed to fetch applied time limits {response.status}: {response_text}")
+					_LOGGER.error(f"Failed to fetch applied time limits {response.status}: {redact.redact_response(response_text)}")
 					raise NetworkError(f"Failed to fetch applied time limits: HTTP {response.status}")
 
 				data = await response.json()
@@ -1744,7 +1790,7 @@ class FamilyLinkClient:
 				# the batchCreate echo.
 				created = re.search(
 					r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-					response_text or "",
+					redact.redact_response(response_text or ""),
 				)
 				if created:
 					await self._async_delete_time_limit_override(
@@ -1824,7 +1870,7 @@ class FamilyLinkClient:
 		) as response:
 			response_text = await response.text()
 			if response.status != 200:
-				_LOGGER.error(f"Failed to add time bonus {response.status}: {response_text}")
+				_LOGGER.error(f"Failed to add time bonus {response.status}: {redact.redact_response(response_text)}")
 				return False, response_text
 
 			# Google acknowledges the batchCreate with HTTP 200 even when the
@@ -1832,7 +1878,7 @@ class FamilyLinkClient:
 			# so a 200 alone is not proof of success.
 			_LOGGER.debug(
 				f"Time bonus batchCreate response for device {device_id}: "
-				f"{response_text[:300]}"
+				f"{redact.redact_response(response_text)}"
 			)
 			return True, response_text
 
@@ -1909,12 +1955,12 @@ class FamilyLinkClient:
 			) as response:
 				response_text = await response.text()
 				if response.status != 200:
-					_LOGGER.error(f"Failed to cancel time bonus {response.status}: {response_text}")
+					_LOGGER.error(f"Failed to cancel time bonus {response.status}: {redact.redact_response(response_text)}")
 					return False
 
 				_LOGGER.debug(
 					f"Time bonus delete response for override {override_id}: "
-					f"{response_text[:300]}"
+					f"{redact.redact_response(response_text)}"
 				)
 				_LOGGER.info(f"Successfully cancelled time bonus override {override_id}")
 				return True
@@ -2054,7 +2100,7 @@ class FamilyLinkClient:
 					response_text = await response.text()
 					_LOGGER.error(
 						"Failed to update weekly bedtime policy (HTTP %s): %s",
-						response.status, response_text,
+						response.status, redact.redact_response(response_text),
 					)
 					return False
 
@@ -2091,7 +2137,7 @@ class FamilyLinkClient:
 					_LOGGER.error(
 						"Bedtime weekly policy was updated but the daily override failed "
 						"(HTTP %s): %s — tonight may not reflect the change",
-						response.status, response_text,
+						response.status, redact.redact_response(response_text),
 					)
 					return False
 
@@ -2216,7 +2262,7 @@ class FamilyLinkClient:
 					response_text = await response.text()
 					_LOGGER.error(
 						"Failed to create school time override (HTTP %s): %s",
-						response.status, response_text,
+						response.status, redact.redact_response(response_text),
 					)
 					return False
 
@@ -2371,7 +2417,7 @@ class FamilyLinkClient:
 					response_text = await response.text()
 					_LOGGER.warning(
 						"Failed to delete override %s (HTTP %s): %s",
-						override_uuid, response.status, response_text,
+						override_uuid, response.status, redact.redact_response(response_text),
 					)
 					return False
 				_LOGGER.debug("Deleted school time override %s", override_uuid)
@@ -2423,7 +2469,7 @@ class FamilyLinkClient:
 			) as response:
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"Failed to enable daily limit {response.status}: {response_text}")
+					_LOGGER.error(f"Failed to enable daily limit {response.status}: {redact.redact_response(response_text)}")
 					return False
 
 				_LOGGER.info(f"Successfully enabled daily limit for account {account_id}")
@@ -2476,7 +2522,7 @@ class FamilyLinkClient:
 			) as response:
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"Failed to disable daily limit {response.status}: {response_text}")
+					_LOGGER.error(f"Failed to disable daily limit {response.status}: {redact.redact_response(response_text)}")
 					return False
 
 				_LOGGER.info(f"Successfully disabled daily limit for account {account_id}")
@@ -2537,7 +2583,7 @@ class FamilyLinkClient:
 			) as response:
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"Failed to set daily limit {response.status}: {response_text}")
+					_LOGGER.error(f"Failed to set daily limit {response.status}: {redact.redact_response(response_text)}")
 					return False
 
 				_LOGGER.info(f"Successfully set daily limit to {daily_minutes} minutes for device {device_id}")
@@ -2827,7 +2873,7 @@ class FamilyLinkClient:
 						response_text = await response.text()
 						_LOGGER.error(
 							"Failed to set weekly bedtime (HTTP %s): %s",
-							response.status, response_text,
+							response.status, redact.redact_response(response_text),
 						)
 						return False
 					_LOGGER.info(
@@ -2857,7 +2903,7 @@ class FamilyLinkClient:
 			) as response:
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"Failed to set bedtime {response.status}: {response_text}")
+					_LOGGER.error(f"Failed to set bedtime {response.status}: {redact.redact_response(response_text)}")
 					return False
 
 				_LOGGER.info(f"Successfully set today-only bedtime {start_time}-{end_time} for day {day}")
@@ -2921,7 +2967,7 @@ class FamilyLinkClient:
 					response_text = await response.text()
 					# Use warning for temporary errors (503), error for others
 					log_method = _LOGGER.warning if response.status == 503 else _LOGGER.error
-					log_method(f"Failed to fetch time limit rules (HTTP {response.status}): {response_text}")
+					log_method(f"Failed to fetch time limit rules (HTTP {response.status}): {redact.redact_response(response_text)}")
 				if response.status != 200:
 					return {
 						"bedtime_enabled": False,
@@ -3209,18 +3255,37 @@ class FamilyLinkClient:
 			raise NetworkError(f"Failed to fetch time limit rules: {err}") from err
 
 	async def async_cleanup(self) -> None:
-		"""Clean up client resources."""
+		"""Close the HTTP session and drop every cached credential.
+
+		Called on unload and when a session expires. Clearing the cached cookie
+		dict and the prebuilt Cookie header matters as much as closing the
+		session: without it a retry would keep replaying a session Google - or
+		the local expiry check - has already rejected.
+
+		Overwriting the cookie values is best-effort. Python strings are
+		immutable, so this drops the last reference this object holds rather
+		than scrubbing the bytes in place; it shortens the window in which a
+		heap dump or a swap file would still contain the session.
+		"""
 		if self._session:
 			try:
 				await self._session.close()
 			except Exception as e:
 				_LOGGER.debug(f"Error closing session during cleanup: {e}")
 			self._session = None
+		self._session_created_at = 0
 		# Clear cached cookie data
 		if hasattr(self, '_cookie_dict'):
+			self._cookie_dict.clear()
 			del self._cookie_dict
 		if hasattr(self, '_cookie_header'):
 			del self._cookie_header
+		for cookie in self._cookies or []:
+			if isinstance(cookie, dict) and "value" in cookie:
+				cookie["value"] = ""
+		self._cookies = None
+		self._account_id = None
+		self._weekly_slot_cache.clear()
 
 	async def async_get_contact_restriction(self, account_id: str | None = None) -> int | None:
 		"""Read who can call and text the child (Family Link "Allowed calls and texts").
@@ -3254,7 +3319,7 @@ class FamilyLinkClient:
 					raise SessionExpiredError("Session expired, please re-authenticate")
 				if response.status != 200:
 					response_text = await response.text()
-					_LOGGER.error(f"Failed to fetch contact restriction {response.status}: {response_text}")
+					_LOGGER.error(f"Failed to fetch contact restriction {response.status}: {redact.redact_response(response_text)}")
 					raise NetworkError(f"Failed to fetch contact restriction: HTTP {response.status}")
 
 				data = await response.json()
@@ -3308,7 +3373,7 @@ class FamilyLinkClient:
 				if response.status != 200:
 					response_text = await response.text()
 					_LOGGER.error(
-						f"Failed to set contact restriction (HTTP {response.status}): {response_text}"
+						f"Failed to set contact restriction (HTTP {response.status}): {redact.redact_response(response_text)}"
 					)
 					return False
 
