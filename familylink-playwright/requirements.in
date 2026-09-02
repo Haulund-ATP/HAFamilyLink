@@ -1,0 +1,20 @@
+# Direct dependencies of the Family Link auth service.
+#
+# Compile with:
+#   uv pip compile requirements.in --generate-hashes --python-version 3.11 \
+#       -o requirements.txt
+#
+# The container installs requirements.txt with --require-hashes, so every
+# artefact is verified against this file before it is executed.
+fastapi
+uvicorn[standard]
+# Imported directly by app/vnc_proxy.py for the WebSocket framebuffer bridge.
+starlette
+# Fernet (authenticated encryption) for the cookie store.
+cryptography
+# Request/response models and configuration validation.
+pydantic
+# Browser automation for the interactive Google login. Pinned rather than
+# installed unversioned so the image is reproducible and the bundled Chromium
+# revision is known.
+playwright==1.58.0

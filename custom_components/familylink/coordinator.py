@@ -482,9 +482,11 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 			return
 
 		try:
+			# Options override data so a token or URL changed through the
+			# options flow takes effect without recreating the entry.
 			self.client = FamilyLinkClient(
 				hass=self.hass,
-				config=self.entry.data,
+				config={**self.entry.data, **self.entry.options},
 			)
 
 			await self.client.async_authenticate()
@@ -607,10 +609,28 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 		return self._devices.get(device_id)
 
 	async def _create_auth_notification(self) -> None:
-		"""Create a persistent notification when authentication fails (only once)."""
+		"""Enter the re-authentication state and notify the user once.
+
+		Two things happen: Home Assistant's own re-auth flow is started, which
+		is the explicit, machine-readable "this entry needs credentials again"
+		state, and a persistent notification explains what to do about it.
+		"""
 		if self._auth_notification_sent:
 			_LOGGER.debug("Auth notification already sent, skipping")
 			return
+
+		# Drop the cached session so nothing keeps replaying expired cookies.
+		if self.client is not None:
+			try:
+				await self.client.async_cleanup()
+			except Exception as err:  # pragma: no cover - defensive
+				_LOGGER.debug("Error while clearing the expired session: %s", err)
+			self.client = None
+
+		try:
+			self.entry.async_start_reauth(self.hass)
+		except Exception as err:  # pragma: no cover - older HA releases
+			_LOGGER.debug("Could not start the re-authentication flow: %s", err)
 
 		await self.hass.services.async_call(
 			"persistent_notification",

@@ -11,6 +11,7 @@ AUTH_TIMEOUT=$(bashio::config 'auth_timeout' '300')
 SESSION_DURATION=$(bashio::config 'session_duration' '86400')
 LANGUAGE=$(bashio::config 'language' '')
 TIMEZONE=$(bashio::config 'timezone' '')
+COOKIE_ALLOWLIST_MODE=$(bashio::config 'cookie_allowlist_mode' 'strict')
 
 # Auto-detect from Home Assistant if not manually configured
 if [ -z "${LANGUAGE}" ] || [ "${LANGUAGE}" == "null" ]; then
@@ -47,15 +48,54 @@ if [ -z "${TIMEZONE}" ] || [ "${TIMEZONE}" == "null" ]; then
     fi
 fi
 
+# The vnc_password option no longer has any effect. VNC's own authentication
+# used DES and silently honoured only the first 8 characters, and the add-on
+# shipped with the publicly known default "familylink". The framebuffer is now
+# reachable only through the add-on's authenticated bridge (Home Assistant
+# ingress, or the service token), and the VNC server itself listens on loopback
+# with no RFB authentication at all, so there is no password to get wrong.
+LEGACY_VNC_PASSWORD=$(bashio::config 'vnc_password' '')
+if [ -n "${LEGACY_VNC_PASSWORD}" ] && [ "${LEGACY_VNC_PASSWORD}" != "null" ]; then
+    bashio::log.warning "The 'vnc_password' option is deprecated and ignored."
+    bashio::log.warning "The browser view is now protected by Home Assistant ingress"
+    bashio::log.warning "or the service API token instead of a VNC password."
+    bashio::log.warning "You can remove the option from the add-on configuration."
+fi
+unset LEGACY_VNC_PASSWORD
+
 # Export environment variables
 export LOG_LEVEL="${LOG_LEVEL}"
 export AUTH_TIMEOUT="${AUTH_TIMEOUT}"
 export SESSION_DURATION="${SESSION_DURATION}"
 export LANGUAGE="${LANGUAGE}"
 export TIMEZONE="${TIMEZONE}"
-# Mark this as a Supervisor-managed add-on run so the app enforces the
-# cookie API key (the HA integration reads it from the shared /share dir).
+export COOKIE_ALLOWLIST_MODE="${COOKIE_ALLOWLIST_MODE}"
+# Mark this as a Supervisor-managed add-on run.
 export ADDON_MODE=1
+
+# ------------------------------------------------------------------------------
+# Ingress trust
+#
+# When the host port is NOT published, the only route into this container is the
+# Supervisor's ingress proxy, which authenticates the Home Assistant user before
+# forwarding. In that configuration an ingress request counts as an
+# authenticated UI session and the operator never has to handle the token.
+#
+# If the port IS published, the X-Ingress-Path header could simply be forged by
+# anyone who can reach the port, so ingress trust is switched off and the web UI
+# asks for the service token. Anything we cannot positively confirm is treated
+# as published - the default has to fail closed.
+# ------------------------------------------------------------------------------
+HOST_PORT="$(bashio::addon.port 8099 2>/dev/null || true)"
+if [ -z "${HOST_PORT}" ] || [ "${HOST_PORT}" == "null" ]; then
+    export INGRESS_TRUSTED=1
+    bashio::log.info "Host port 8099 is not published: reachable through Home Assistant ingress only"
+else
+    export INGRESS_TRUSTED=0
+    bashio::log.warning "Host port 8099 is published on the host (port ${HOST_PORT})."
+    bashio::log.warning "Anyone who can reach it must present the service API token."
+    bashio::log.warning "Unless you need direct access, clear the port mapping in the add-on's Network section."
+fi
 
 bashio::log.info "Configuration loaded:"
 bashio::log.info "  - Log Level: ${LOG_LEVEL}"
@@ -63,165 +103,58 @@ bashio::log.info "  - Auth Timeout: ${AUTH_TIMEOUT}s"
 bashio::log.info "  - Session Duration: ${SESSION_DURATION}s"
 bashio::log.info "  - Language: ${LANGUAGE}"
 bashio::log.info "  - Timezone: ${TIMEZONE}"
+bashio::log.info "  - Cookie allowlist mode: ${COOKIE_ALLOWLIST_MODE}"
 
-# Ensure shared directory exists
-mkdir -p /share/familylink
+# ------------------------------------------------------------------------------
+# Unprivileged runtime
+#
+# Everything below runs as the dedicated 'familylink' user created in the image:
+# uvicorn, the X server and Chromium. Running the browser as root was the reason
+# --no-sandbox was needed at all, so dropping privileges here is what allows
+# Chromium's sandbox to be switched back on.
+# ------------------------------------------------------------------------------
+RUN_USER="familylink"
+RUN_HOME="/var/lib/familylink"
+
+mkdir -p /share/familylink "${RUN_HOME}" /tmp/familylink /tmp/.X11-unix
 chmod 700 /share/familylink
+chmod 700 "${RUN_HOME}"
+chmod 1777 /tmp/.X11-unix
+chown -R "${RUN_USER}:${RUN_USER}" /share/familylink "${RUN_HOME}" /tmp/familylink
 
-bashio::log.info "Shared storage ready at /share/familylink"
+bashio::log.info "Shared storage ready at /share/familylink (0700, owned by ${RUN_USER})"
 
-# Start D-Bus system bus if not available (fixes blank screen on RPi4/ARM64)
+# Start the D-Bus system bus while we still have privileges (fixes a blank
+# screen on RPi4/ARM64). Non-critical: Chromium is launched with D-Bus disabled.
 if [ ! -S /run/dbus/system_bus_socket ]; then
     bashio::log.info "Starting D-Bus system bus..."
     mkdir -p /run/dbus
     dbus-daemon --system --fork 2>/dev/null || bashio::log.warning "D-Bus not available (non-critical)"
 fi
 
-# Remove a stale X99 socket/lock left by a previous non-graceful stop (e.g. an
-# add-on restart). If they survive, `Xvfb :99` silently refuses to bind and the
-# whole display stack dies invisibly, leaving only uvicorn up (issue #136).
-if [ -e /tmp/.X99-lock ] || [ -e /tmp/.X11-unix/X99 ]; then
-    bashio::log.info "Cleaning stale X99 lock/socket from a previous run..."
-    rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
-fi
-
+# The display stack (X server + window manager) is no longer started here. The
+# application brings it up when an authentication session starts and tears it
+# down when the session ends, so there is no observable browser window - and no
+# reachable framebuffer - while nobody is logging in.
+export FAMILYLINK_RUN_DIR=/tmp/familylink
+export FAMILYLINK_LOG_DIR=/tmp/familylink/log
+export HOME="${RUN_HOME}"
+export XDG_RUNTIME_DIR=/tmp/familylink
 export DISPLAY=:99
 
-# VNC-auth (both x11vnc's -passwd and TigerVNC's VncAuth) uses DES and silently
-# keeps only the first 8 chars; a longer password would then never
-# authenticate. The server is localhost-only and reached through websockify, so
-# truncate explicitly and warn rather than let the mismatch fail silently
-# (issue #136).
-VNC_PASSWORD=$(bashio::config 'vnc_password' 'familylink')
-if [ "${#VNC_PASSWORD}" -gt 8 ]; then
-    bashio::log.warning "VNC password longer than 8 chars; VNC DES auth uses only the first 8"
-    VNC_PASSWORD="${VNC_PASSWORD:0:8}"
-fi
-# Expose to the FastAPI app so the web UI can adapt the noVNC link/hint
-export VNC_PASSWORD="${VNC_PASSWORD}"
+bashio::log.info "Starting FastAPI application as ${RUN_USER}..."
 
-# The display server is started in one of two ways (issue #136):
-#
-#   1. TigerVNC's Xvnc — an X server that speaks the RFB (VNC) protocol
-#      natively, so there is no Xvfb and no x11vnc screen-scraper. This removes
-#      the exact component that crashed on client-connect (x11vnc 0.9.16
-#      dropping its X connection). Preferred.
-#   2. Legacy Xvfb + x11vnc — kept as an automatic fallback so we degrade
-#      instead of losing VNC entirely where Xvnc is unavailable.
-#
-# Set FAMILYLINK_VNC_BACKEND=x11vnc (or tigervnc) to force a backend.
-VNC_BACKEND="${FAMILYLINK_VNC_BACKEND:-auto}"
-DISPLAY_STARTED=""
-
-start_tigervnc() {
-    command -v Xvnc >/dev/null 2>&1 || { bashio::log.info "Xvnc not installed"; return 1; }
-
-    # vncpasswd -f is filter mode: reads the plaintext password from stdin and
-    # writes the encrypted file to stdout, so no interactive prompts are needed.
-    local sec_args
-    if [ -n "${VNC_PASSWORD}" ] && command -v vncpasswd >/dev/null 2>&1; then
-        mkdir -p /root/.vnc
-        if printf '%s' "${VNC_PASSWORD}" | vncpasswd -f >/root/.vnc/passwd 2>/dev/null \
-            && [ -s /root/.vnc/passwd ]; then
-            chmod 600 /root/.vnc/passwd 2>/dev/null || true
-            sec_args=(-SecurityTypes VncAuth -rfbauth /root/.vnc/passwd)
-        else
-            bashio::log.warning "vncpasswd failed; starting TigerVNC without a password (localhost only)"
-            sec_args=(-SecurityTypes None)
-        fi
-    else
-        sec_args=(-SecurityTypes None)
-    fi
-
-    bashio::log.info "Starting display server (TigerVNC Xvnc on :99)..."
-    Xvnc :99 -geometry 1280x1024 -depth 24 -rfbport 5900 -localhost \
-        -desktop familylink "${sec_args[@]}" &
-    XVNC_PID=$!
-    sleep 2
-    if kill -0 "${XVNC_PID}" 2>/dev/null; then
-        bashio::log.info "TigerVNC display server started"
-        return 0
-    fi
-    bashio::log.warning "TigerVNC failed to start (see log above)"
-    return 1
-}
-
-start_xvfb_x11vnc() {
-    # A failed TigerVNC attempt can leave :99 state behind, which would block
-    # Xvfb from binding; clear it before falling back.
-    rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
-    bashio::log.info "Starting virtual display (Xvfb)..."
-    Xvfb :99 -screen 0 1280x1024x16 -ac -nolisten tcp &
-    XVFB_PID=$!
-    sleep 2
-    if ! kill -0 "${XVFB_PID}" 2>/dev/null; then
-        bashio::log.warning "Xvfb failed to start — VNC will be unavailable (see log above)"
-        return 1
-    fi
-
-    bashio::log.info "Starting VNC server (x11vnc, localhost only)..."
-    local pw_args
-    if [ -n "${VNC_PASSWORD}" ]; then
-        pw_args=(-passwd "${VNC_PASSWORD}")
-    else
-        pw_args=(-nopw)
-    fi
-    x11vnc -display :99 -forever -shared -rfbport 5900 -localhost "${pw_args[@]}" &
-    VNC_PID=$!
-    sleep 1
-    if ! kill -0 "${VNC_PID}" 2>/dev/null; then
-        bashio::log.warning "x11vnc failed to start — noVNC will not be available"
-        return 1
-    fi
-    return 0
-}
-
-if [ "${VNC_BACKEND}" = "x11vnc" ]; then
-    start_xvfb_x11vnc && DISPLAY_STARTED="x11vnc"
-elif [ "${VNC_BACKEND}" = "tigervnc" ]; then
-    start_tigervnc && DISPLAY_STARTED="tigervnc"
-else
-    if start_tigervnc; then
-        DISPLAY_STARTED="tigervnc"
-    else
-        bashio::log.info "Falling back to legacy Xvfb + x11vnc display stack..."
-        start_xvfb_x11vnc && DISPLAY_STARTED="x11vnc"
-    fi
-fi
-
-if [ -z "${DISPLAY_STARTED}" ]; then
-    bashio::log.warning "No display server could be started — noVNC will not be available"
-fi
-
-# Start window manager on whichever display server came up
-fluxbox &
-FLUXBOX_PID=$!
-sleep 1
-if ! kill -0 "${FLUXBOX_PID}" 2>/dev/null; then
-    bashio::log.warning "fluxbox failed to start (non-critical, see log above)"
-fi
-
-bashio::log.info "Starting noVNC on port 6080..."
-websockify --web=/usr/share/novnc 6080 localhost:5900 &
-NOVNC_PID=$!
-sleep 1
-if ! kill -0 "${NOVNC_PID}" 2>/dev/null; then
-    bashio::log.warning "websockify/noVNC failed to start on port 6080"
-fi
-
-# Display a welcome banner on the virtual display so noVNC is not black
-# before the user triggers the authentication flow (issue #108).
-if [ -n "${DISPLAY_STARTED}" ] && [ -x /usr/local/bin/welcome-banner.sh ]; then
-    /usr/local/bin/welcome-banner.sh || bashio::log.warning "Welcome banner failed to start (non-critical)"
-fi
-
-bashio::log.info "Starting FastAPI application..."
-
-# Start the FastAPI application with uvicorn directly
 cd /app || exit 1
-exec uvicorn app.main:app \
-    --host 0.0.0.0 \
-    --port 8099 \
-    --log-level "${LOG_LEVEL}" \
-    --no-access-log \
-    --workers 1
+exec s6-setuidgid "${RUN_USER}" \
+    /usr/bin/env \
+        HOME="${RUN_HOME}" \
+        XDG_RUNTIME_DIR=/tmp/familylink \
+        DISPLAY=:99 \
+        FAMILYLINK_RUN_DIR=/tmp/familylink \
+        FAMILYLINK_LOG_DIR=/tmp/familylink/log \
+    uvicorn app.main:app \
+        --host 0.0.0.0 \
+        --port 8099 \
+        --log-level "${LOG_LEVEL}" \
+        --no-access-log \
+        --workers 1

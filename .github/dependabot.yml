@@ -1,0 +1,56 @@
+# Automated dependency updates.
+#
+# Everything in this repository is pinned - Python packages by version and
+# hash, base images and GitHub Actions by digest/commit - which makes builds
+# reproducible but also means nothing updates on its own. Dependabot is what
+# turns those pins from "frozen" into "deliberately reviewed".
+version: 2
+updates:
+  # Python dependencies of the auth service. The lock file carries hashes, so
+  # Dependabot regenerates both files together.
+  - package-ecosystem: pip
+    directory: /familylink-playwright
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - security
+    groups:
+      fastapi-stack:
+        patterns:
+          - fastapi
+          - starlette
+          - uvicorn*
+          - pydantic*
+
+  # Test and tooling dependencies.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+
+  # Base images referenced by digest in the Dockerfiles.
+  - package-ecosystem: docker
+    directory: /familylink-playwright
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - docker
+
+  # Actions referenced by commit SHA in the workflows.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - ci

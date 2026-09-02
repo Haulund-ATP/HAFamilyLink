@@ -8,6 +8,8 @@ Monitor and control Google Family Link from Home Assistant: screen time, device 
 
 > **Disclaimer.** This integration uses unofficial, reverse-engineered Google Family Link endpoints. There is no official API: Google can change or break things at any time, and using this integration may violate Google's Terms of Service and could result in account suspension. **Use at your own risk.** This project is not affiliated with, endorsed by, or connected to Google LLC.
 
+> **Security.** The auth service stores a live Google *account* session belonging to a Family Link parent - not a Family Link-scoped credential. Read **[SECURITY.md](SECURITY.md)** before you install this, and use a **dedicated Google parent account**. It covers the threat model, what the encryption at rest does and does not protect, cookie expiry, and how to rotate credentials if something leaks.
+
 ![Family Link dashboard](https://raw.githubusercontent.com/noiwid/HAFamilyLink/main/examples/dashboard.png)
 
 > An example Lovelace dashboard built from this integration. The YAML and setup instructions are in [`examples/`](examples/).
@@ -28,6 +30,7 @@ The endpoints and payload shapes the integration relies on are documented in [GO
 | App management | Block or unblock apps, per-app daily limits (blocked, limited, unrestricted or "unlimited time"), one-call school mode that blocks everything except an essentials whitelist |
 | Location (opt-in) | GPS device tracker with saved places and address, battery level of the source device, on-demand refresh |
 | Robustness | Cached data on transient API errors, automatic session refresh, persistent notification when re-authentication is needed |
+| Security | Every auth-service endpoint except the health check requires a token; the browser view runs behind Home Assistant ingress and only during a login; the stored session has an enforced lifetime; credentials, coordinates and child identifiers are redacted from logs. See [SECURITY.md](SECURITY.md) |
 
 Translations: English, French, Hebrew.
 
@@ -98,7 +101,7 @@ Targeting: every service accepts an optional `entity_id` or explicit `child_id` 
 
 ## Troubleshooting
 
-Setup and authentication problems (no entities, 403 on the cookie endpoint, session expired) are covered in [INSTALL.md](INSTALL.md); add-on specifics (web UI, VNC) in [familylink-playwright/DOCS.md](familylink-playwright/DOCS.md).
+Setup and authentication problems (no entities, a rejected token, session expired) are covered in [INSTALL.md](INSTALL.md); add-on specifics (web UI, the browser view) in [familylink-playwright/DOCS.md](familylink-playwright/DOCS.md); security questions and credential rotation in [SECURITY.md](SECURITY.md).
 
 ## Changelog
 
@@ -106,7 +109,17 @@ All notable changes are tracked in [CHANGELOG.md](CHANGELOG.md) and published on
 
 ## Contributing
 
-Contributions are welcome: fork the repository, create a feature branch, make your changes with clear commit messages, test against a live Home Assistant (there is no test suite; the integration is loaded by Home Assistant at runtime), and open a pull request.
+Contributions are welcome: fork the repository, create a feature branch, make your changes with clear commit messages, and open a pull request.
+
+There is a test suite for the auth service and the integration's authentication layer:
+
+```bash
+pip install -r requirements-dev.txt
+pip install --require-hashes -r familylink-playwright/requirements.txt
+pytest
+```
+
+CI additionally runs `ruff`, `bandit`, `pip-audit`, and builds both container images for `amd64` and `arm64`. The Family Link business logic is still exercised by running it against a live Home Assistant.
 
 This integration is free and maintained in my spare time. If it helped you or saved you time, you can buy me a beer:
 
@@ -124,6 +137,7 @@ This integration is free and maintained in my spare time. If it helped you or sa
 ## Support
 
 - [Report issues](https://github.com/noiwid/HAFamilyLink/issues)
+- [Report a security vulnerability privately](https://github.com/noiwid/HAFamilyLink/security/advisories/new) (see [SECURITY.md](SECURITY.md#reporting-a-vulnerability))
 - [Feature requests](https://github.com/noiwid/HAFamilyLink/issues/new)
 - [Discussions](https://github.com/noiwid/HAFamilyLink/discussions)
 

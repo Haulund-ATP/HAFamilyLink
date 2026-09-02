@@ -31,15 +31,20 @@ Both routes then continue with the same [integration install](#install-the-integ
 1. Go to **Settings > Add-ons > Add-on Store**, open the three-dot menu, choose **Repositories**, and add `https://github.com/noiwid/HAFamilyLink`.
 2. Install **Google Family Link Auth**. The image is built locally, so the install takes several minutes.
 3. Start the add-on. Enabling **Start on boot** and **Watchdog** is recommended.
-4. Log in to Google through the add-on: click **Open Web UI** (port 8099), click **Start Authentication**, then open the noVNC page (port 6080) and finish the Google login and 2FA in the browser window it shows. The full walkthrough, the options reference, and add-on troubleshooting are in the [add-on documentation](familylink-playwright/DOCS.md).
-5. That is all on the auth side: the integration auto-detects the add-on and its API key. Continue with [Install the integration](#install-the-integration).
+4. Log in to Google through the add-on: click **Open Web UI** (this opens through Home Assistant ingress, so no port has to be reachable and there is no password to type), click **Start Authentication**, then use the **Open noVNC** link on that page to finish the Google login and 2FA in the browser window it shows. The full walkthrough, the options reference, and add-on troubleshooting are in the [add-on documentation](familylink-playwright/DOCS.md).
+5. That is all on the auth side: the integration auto-detects the add-on and reads its service token automatically. Continue with [Install the integration](#install-the-integration).
+
+> Read [SECURITY.md](SECURITY.md) before you rely on this. In particular, use a **dedicated Google parent account**: the session the add-on stores is a Google account session, not a Family Link-scoped one.
 
 ## Route B: Home Assistant Container or Core
 
-1. Run the standalone auth container: [DOCKER_STANDALONE.md](DOCKER_STANDALONE.md) covers the Docker Compose file, environment variables, volumes, ports, and the `API_KEY` protection.
-2. Authenticate through its web UI (`http://<docker-host>:8099`), using the same two-port flow as the add-on (start the authentication on port 8099, finish the Google login via noVNC on port 6080).
-3. Note the URL you will give the integration: `http://<docker-host>:8099`, with `?api_key=<key>` appended if you set the `API_KEY` environment variable on the container.
-4. Continue with [Install the integration](#install-the-integration). In the configuration flow, choose **Manual URL configuration (Docker standalone)** and enter that URL.
+1. Run the standalone auth container: [DOCKER_STANDALONE.md](DOCKER_STANDALONE.md) covers the Docker Compose file, environment variables, volumes, the single port, and the service token.
+2. Read the service token: `cat ./data/api_key`.
+3. Authenticate through its web UI (`http://<docker-host>:8099`): paste the token to unlock the page, click **Start Authentication**, then use the **Open noVNC** link to finish the Google login. Everything is on port 8099 now.
+4. Note two values for the integration: the URL `http://<docker-host>:8099` and the token. **Do not append the token to the URL** - it goes in its own field.
+5. Continue with [Install the integration](#install-the-integration). In the configuration flow, choose **Manual URL configuration (Docker standalone)**.
+
+> Read [SECURITY.md](SECURITY.md) before you rely on this, and use a **dedicated Google parent account**.
 
 ## Install the integration
 
@@ -58,6 +63,18 @@ Both routes then continue with the same [integration install](#install-the-integ
 2. Extract or copy it into your Home Assistant `config/custom_components/` directory, so that `config/custom_components/familylink/manifest.json` exists. Copy the folder in full: it contains subpackages (`auth/`, `client/`, `translations/`, `utils/`) and non-Python files (`services.yaml`, `strings.json`) that the integration needs; a partial copy will not load.
 3. Restart Home Assistant.
 
+## Upgrading from a version before 2.0.0
+
+Existing installations keep working; the migration is automatic. What changes:
+
+- **The auth-service key moves out of the URL.** A config entry of the form `http://host:8099?api_key=...` is rewritten on upgrade so the key lives in its own secret field and is sent as an `X-API-Key` header. Nothing to do by hand.
+- **The add-on is reached through ingress**, and no host port is published any more. Port 6080 is gone entirely - noVNC is served on 8099 behind the same authentication. If Home Assistant runs on a different machine than the add-on, see [temporarily exposing a host port](SECURITY.md#temporarily-exposing-a-host-port).
+- **`vnc_password` is ignored.** You can delete it from the add-on configuration.
+- **`session_duration` is now enforced.** A stored session older than that setting is deleted on first read, so you may be asked to sign in once after upgrading. That is the intended behaviour: before 2.0.0 the option did nothing.
+- **Only the Google cookies Family Link needs are stored.** See [cookie minimisation](familylink-playwright/DOCS.md#cookie-minimisation), including the `legacy` escape hatch if strict mode fails in your Google region.
+
+For standalone Docker there are compose-file changes as well: see [Migrating from 1.x](DOCKER_STANDALONE.md#migrating-from-1x).
+
 ## Configuration flow
 
 Go to **Settings > Devices & Services > Add Integration** and search for **Google Family Link**.
@@ -75,9 +92,16 @@ If auto-detect finds nothing, the flow falls back to the manual URL form.
 
 ### Step 2 (manual URL only): authentication server URL
 
-A single field: the auth server URL, for example `http://192.168.1.100:8099`. If the container requires an API key (auth container v1.7.0 or later with `API_KEY` set), append it: `http://192.168.1.100:8099?api_key=<key>`.
+Two fields:
 
-The flow verifies the URL with `GET /api/health`, then tries to fetch the cookies. If an error appears, see [Troubleshooting (setup)](#troubleshooting-setup) below.
+| Field | Notes |
+|---|---|
+| **Authentication Server URL** | For example `http://192.168.1.100:8099`. No query string. |
+| **Auth service API token** | The value from the container's `data/api_key` file, or its `API_TOKEN` environment variable. Sent as an `X-API-Key` header. |
+
+The token has its own field because a credential in a URL leaks through browser history, proxy logs and `Referer` headers - the auth service refuses one in a query string with HTTP 400, even if the value is correct. If you paste a legacy `http://host:8099?api_key=...` URL anyway, the flow splits it for you and moves the key into the token field.
+
+The flow verifies the URL with `GET /api/health`, checks the token against `GET /api/cookies/check`, and then fetches the cookies. If an error appears, see [Troubleshooting (setup)](#troubleshooting-setup) below.
 
 ### Step 3: settings
 
@@ -86,26 +110,31 @@ The flow verifies the URL with `GET /api/health`, then tries to fetch the cookie
 | Integration Name | `Google Family Link` | | Display name of the config entry. |
 | Update Interval (seconds) | `60` | 30 to 3600 | How often data is fetched from Google. |
 | Request Timeout (seconds) | `30` | 10 to 120 | Timeout of each API request. |
-| Enable GPS location tracking | off | | Adds a device tracker and a battery sensor per child. Each location poll may send a notification to the child's device, so it is disabled by default for privacy. |
+| Enable GPS location tracking | off | | Adds a device tracker and a battery sensor per child. Each location poll may send a notification to the child's device, so it is disabled by default for privacy. Coordinates and addresses are never written to the Home Assistant log. |
 
 The first data fetch runs during setup, so entities appear as soon as the flow completes. Entities are created per child (for example `sensor.<child>_daily_screen_time`) and per device (for example `switch.<device>`); the full entity and service catalog is in the [README](README.md).
 
 ### Changing settings later
 
-**Settings > Devices & Services > Google Family Link > Configure** exposes the same update interval, timeout, and GPS options. Saving reloads the integration.
+**Settings > Devices & Services > Google Family Link > Configure** exposes the same update interval, timeout, and GPS options, plus the **Auth service API token**. Leave the token field empty to keep the stored one - it is never pre-filled, so a secret is not sent back out to the browser just to be displayed. Saving reloads the integration.
 
 ## Re-authentication
 
-Google sessions expire eventually. When that happens:
+Sessions expire for two independent reasons, and both land you in the same place:
 
-1. The integration automatically fetches fresh cookies from the auth service and retries once.
-2. If that also fails, it creates a persistent notification in Home Assistant asking you to re-authenticate (only one notification, not one per failed poll).
+- **The local lifetime elapsed.** The auth service enforces its `session_duration` option (default 24 hours). At that point the stored session is *deleted*, not just flagged, so it cannot be replayed.
+- **Google invalidated it.** Google can end a session sooner - after a password change, a security review, or a sign-out elsewhere. `session_duration` does not extend Google's own decision.
+
+What happens then:
+
+1. The integration fetches fresh cookies from the auth service and retries once.
+2. If that also fails, it clears its cached cookies and HTTP session, puts the config entry into Home Assistant's **re-authentication** state, and creates a persistent notification (one notification, not one per failed poll).
 3. Open the auth web UI (add-on **Open Web UI**, or `http://<docker-host>:8099`), click **Start Authentication**, and finish the Google login through noVNC again.
-4. Nothing to reload on the integration side: fresh cookies are picked up automatically on the next poll, and the notification logic resets after the next successful fetch.
+4. Nothing to reload on the integration side: fresh cookies are picked up automatically on the next poll, and the notification resets after the next successful fetch. If Home Assistant is showing a re-authentication prompt, submit it once you have signed in again (the token field can stay empty unless the token itself changed).
 
 ## Troubleshooting (setup)
 
-Auth-service issues (noVNC not connecting, black screen, login timeout, VNC password) are covered in the [add-on documentation](familylink-playwright/DOCS.md#troubleshooting) and, for the container, in [DOCKER_STANDALONE.md](DOCKER_STANDALONE.md#troubleshooting).
+Auth-service issues (noVNC not connecting, black screen, login timeout) are covered in the [add-on documentation](familylink-playwright/DOCS.md#troubleshooting) and, for the container, in [DOCKER_STANDALONE.md](DOCKER_STANDALONE.md#troubleshooting).
 
 ### "Google Family Link" not found when adding the integration
 
@@ -118,10 +147,19 @@ Auth-service issues (noVNC not connecting, black screen, login timeout, VNC pass
 - Verify the auth service is running and healthy: `curl http://<host>:8099/api/health`.
 - Verify Home Assistant can reach that host and port (Docker network, VLANs, firewall).
 
-### "The server requires an API key" (HTTP 403)
+### "The auth service rejected the token" (HTTP 401 or 403)
 
-- Route B: append `?api_key=<key>` to the URL, using the value you set in the container's `API_KEY` environment variable.
-- Route A: the key is read automatically from `/share/familylink/api_key`; a 403 usually means the URL was entered manually without the key. Prefer auto-detect on Route A.
+- Route B: put the token in the **Auth service API token** field, copied from the container's `data/api_key` file or its `API_TOKEN` variable. Not in the URL.
+- Route A: the token is read automatically from `/share/familylink/api_key`; a rejection usually means a stale value is set in the integration's options. Clear the token field (empty means "use the discovered one") or prefer auto-detect.
+- Repeated wrong tokens are rate-limited; the service answers HTTP 429 for a minute after ten failures from the same address.
+
+### "API tokens must not be passed in the URL" (HTTP 400)
+
+The configured URL still contains `?api_key=...`. Upgrading the integration migrates existing entries automatically, so this only appears if you typed one in by hand: remove the query string and use the token field.
+
+### "The stored Google session has expired" (HTTP 410)
+
+The session outlived `session_duration` (or was corrupted) and has been deleted. Sign in again through the auth web UI; see [Re-authentication](#re-authentication).
 
 ### "No cookies found"
 

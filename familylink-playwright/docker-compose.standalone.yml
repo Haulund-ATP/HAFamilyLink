@@ -1,33 +1,50 @@
-version: '3.8'
-
 services:
   familylink-auth:
-    # Option 1: Use pre-built standalone image (recommended after v0.9.2)
-    image: ghcr.io/noiwid/familylink-auth:standalone
+    # Use an immutable, versioned tag. The mutable ":standalone" tag is no
+    # longer published: a moving production tag means an unreviewed image can
+    # roll out on the next `docker compose pull`.
+    image: ghcr.io/noiwid/familylink-auth:2.0.0-standalone
     # Option 2: Build locally from Dockerfile.standalone
     # build:
     #   context: .
     #   dockerfile: Dockerfile.standalone
     container_name: familylink-auth
+    # Run an init process as PID 1. The display stack's X server and window
+    # manager are re-parented to PID 1 when the control script exits, and
+    # uvicorn does not reap them - without an init they would accumulate as
+    # zombie entries across authentication sessions. The Home Assistant add-on
+    # needs no equivalent: s6-overlay is already PID 1 there.
+    init: true
     ports:
-      - "8099:8099"  # Web interface
-      - "6080:6080"  # noVNC web interface
+      # Web UI, REST API and the browser view, all behind the service token.
+      # Bound to the loopback interface by default so the service is not
+      # reachable from the rest of the network; change to "8099:8099" only if
+      # Home Assistant runs on another host, and keep it inside a trusted LAN.
+      - "127.0.0.1:8099:8099"
+      # The old noVNC port 6080 is gone: it had no authentication at all. The
+      # browser view is now served at /vnc on port 8099.
     volumes:
       - ./data:/share/familylink:rw
     # Increase shared memory size for Chromium (default 64MB is too small)
     shm_size: '2gb'
+    # Chromium's sandbox needs to create user namespaces. Without this the
+    # service still works, but it logs a warning and falls back to an
+    # unsandboxed browser.
+    security_opt:
+      - seccomp=unconfined
     environment:
       - LOG_LEVEL=info
       - AUTH_TIMEOUT=300
       - SESSION_DURATION=86400
-      - VNC_PASSWORD=familylink
       - LANGUAGE=en-US
       - TIMEZONE=Europe/Paris
-      # Recommended: protect /api/cookies with a key. In standalone mode no key
-      # is auto-generated: if unset, the endpoint stays open (a warning is
-      # logged at startup). If set, point the HA integration at:
-      # http://<host>:8099?api_key=<key>
-      # - API_KEY=change-me
+      # "strict" persists only the Google cookies Family Link needs. Switch to
+      # "legacy" only if strict mode fails on your Google region.
+      - COOKIE_ALLOWLIST_MODE=strict
+      # A token is generated on first start and written to ./data/api_key
+      # (mode 0600). Set API_TOKEN to supply your own (>= 16 characters).
+      # Never append it to a URL - the integration has a separate token field.
+      # - API_TOKEN=change-me-to-at-least-16-characters
     dns:
       - 8.8.8.8
       - 8.8.4.4

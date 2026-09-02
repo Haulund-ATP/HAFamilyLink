@@ -31,10 +31,17 @@ from .const import (
 	SERVICE_UNBLOCK_ALL_APPS,
 	SERVICE_UNBLOCK_APP,
 )
+from . import redact
+from .auth.addon_client import split_legacy_auth_url
+from .const import CONF_API_TOKEN, CONF_AUTH_URL
 from .coordinator import FamilyLinkDataUpdateCoordinator
 from .exceptions import FamilyLinkException
 
 _LOGGER = logging.getLogger(LOGGER_NAME)
+
+# Install log redaction before anything can log: every module in this
+# integration logs through this same logger, so one filter covers them all.
+redact.install(LOGGER_NAME)
 
 PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.DEVICE_TRACKER, Platform.SENSOR, Platform.SWITCH, Platform.SELECT]
 
@@ -133,6 +140,49 @@ SCHEMA_RING_DEVICE = vol.Schema({
 	vol.Optional("device_id"): cv.string,
 	vol.Optional("child_id"): cv.string,
 })
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+	"""Migrate an old config entry.
+
+	Version 1 stored the auth-service key inside the URL, as
+	``http://host:8099?api_key=<key>``. The auth service now refuses a
+	credential in a query string outright - it ends up in browser history,
+	proxy logs and ``Referer`` headers - so the key is moved into its own
+	``api_token`` field and sent as an ``X-API-Key`` header instead.
+
+	The migration is silent and needs no user action: an existing installation
+	keeps working across the upgrade.
+	"""
+	if entry.version >= 2:
+		return True
+
+	data = dict(entry.data)
+	base_url, legacy_token = split_legacy_auth_url(data.get(CONF_AUTH_URL))
+
+	if base_url is not None:
+		data[CONF_AUTH_URL] = base_url
+	if legacy_token:
+		data[CONF_API_TOKEN] = legacy_token
+		redact.register_secret(legacy_token)
+		_LOGGER.info(
+			"Migrated the auth-service key out of the configured URL into a "
+			"separate secret field; it is now sent as an X-API-Key header"
+		)
+
+	# The unique id was the URL, which may have carried the key.
+	unique_id = base_url or entry.unique_id
+	try:
+		hass.config_entries.async_update_entry(
+			entry, data=data, unique_id=unique_id, version=2
+		)
+	except TypeError:
+		# Home Assistant releases before 2024.3 have no `version` keyword.
+		entry.version = 2
+		hass.config_entries.async_update_entry(
+			entry, data=data, unique_id=unique_id
+		)
+	return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -727,7 +777,8 @@ async def async_setup_services(hass: HomeAssistant, coordinator: FamilyLinkDataU
 				_LOGGER.info(f"Service called: refresh_location (child_id: {child_id})")
 				location = await coordinator.client.async_get_location(account_id=child_id, refresh=True)
 				if location:
-					_LOGGER.info(f"Successfully refreshed location for child {child_id}: ({location['latitude']}, {location['longitude']})")
+					# Never log the coordinates themselves.
+					_LOGGER.info("Successfully refreshed location for the supervised child")
 				else:
 					_LOGGER.warning(f"No location data returned for child {child_id}")
 			else:
@@ -739,7 +790,7 @@ async def async_setup_services(hass: HomeAssistant, coordinator: FamilyLinkDataU
 					child_name = child["name"]
 					location = await coordinator.client.async_get_location(account_id=child_account_id, refresh=True)
 					if location:
-						_LOGGER.info(f"Successfully refreshed location for {child_name}: ({location['latitude']}, {location['longitude']})")
+						_LOGGER.info("Successfully refreshed location for a supervised child")
 					else:
 						_LOGGER.warning(f"No location data returned for {child_name}")
 

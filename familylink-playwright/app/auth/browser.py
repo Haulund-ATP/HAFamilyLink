@@ -1,13 +1,78 @@
 """Browser-based authentication manager using Playwright."""
+from __future__ import annotations
+
 import asyncio
 import logging
 import time
 import uuid
-from typing import Dict, Optional
+from typing import Dict
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import (
+    Browser,
+    BrowserContext,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+    async_playwright,
+)
+
+from app import cookies as cookie_rules
+from app import redaction
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# Chromium flags that keep the browser alive in the virtualised, GPU-less
+# environments this add-on runs in (HA OS under a hypervisor, Raspberry Pi).
+# None of these weaken the sandbox or the renderer's process isolation.
+_STABILITY_ARGS: tuple[str, ...] = (
+    # Shared memory: the container's default /dev/shm is too small for Chromium.
+    "--disable-dev-shm-usage",
+    # GPU and rendering - critical for VMs without GPU passthrough.
+    "--disable-gpu",
+    "--disable-gpu-compositing",
+    "--disable-software-rasterizer",
+    "--disable-accelerated-2d-canvas",
+    "--disable-accelerated-video-decode",
+    "--disable-accelerated-video-encode",
+    # Skia and rendering - addresses SEGV crashes in VMs.
+    "--disable-skia-runtime-opts",
+    "--disable-partial-raster",
+    "--disable-zero-copy",
+    "--disable-lcd-text",
+    "--disable-font-subpixel-positioning",
+    # Features that misbehave without a compositor or a system D-Bus.
+    # Note: IsolateOrigins/site-per-process are deliberately NOT disabled here
+    # - turning them off removed Chromium's cross-site process isolation on a
+    # browser that logs into a Google account.
+    "--disable-features=VizDisplayCompositor,dbus,UseSkiaRenderer,TranslateUI",
+    # System services.
+    "--disable-breakpad",
+    "--disable-component-update",
+    # Keep Google's login flow from treating the automation as a bot.
+    "--disable-blink-features=AutomationControlled",
+    # Stability flags.
+    "--disable-background-networking",
+    "--disable-default-apps",
+    "--disable-extensions",
+    "--disable-sync",
+    "--no-first-run",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+    # Memory optimisation.
+    "--memory-pressure-off",
+    "--disable-low-res-tiling",
+    # ARM64 / RPi compatibility.
+    "--ozone-platform=x11",
+)
+
+# Only used if a sandboxed launch fails outright. Kept as a last resort so a
+# platform that cannot grant unprivileged user namespaces still authenticates,
+# rather than silently shipping a sandbox-less browser to everyone.
+_SANDBOX_FALLBACK_ARGS: tuple[str, ...] = (
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+)
 
 
 class BrowserAuthManager:
@@ -15,7 +80,15 @@ class BrowserAuthManager:
 
     MAX_CONCURRENT_SESSIONS = 1
 
-    def __init__(self, auth_timeout: int = 300, language: str = "en-US", timezone: str = "Europe/Paris", storage=None):
+    def __init__(
+        self,
+        auth_timeout: int = 300,
+        language: str = "en-US",
+        timezone: str = "Europe/Paris",
+        storage=None,
+        display_stack=None,
+        allowlist_mode: str = "strict",
+    ):
         """Initialize browser auth manager."""
         self._sessions: Dict[str, Dict] = {}
         self._monitor_tasks: Dict[str, asyncio.Task] = {}
@@ -24,6 +97,9 @@ class BrowserAuthManager:
         self._language = language
         self._timezone = timezone
         self._storage = storage  # Injected SharedStorage instance
+        self._display_stack = display_stack
+        self._allowlist_mode = allowlist_mode
+        self._sandbox_disabled = False
 
     async def initialize(self):
         """Initialize Playwright."""
@@ -33,6 +109,52 @@ class BrowserAuthManager:
         except Exception as e:
             _LOGGER.error(f"Failed to initialize Playwright: {e}")
             raise
+
+    @property
+    def sandbox_disabled(self) -> bool:
+        """Whether the last launch had to fall back to an unsandboxed browser."""
+        return self._sandbox_disabled
+
+    def has_active_session(self) -> bool:
+        """Whether an authentication session is currently in progress."""
+        return any(
+            session.get("status") == "authenticating"
+            for session in self._sessions.values()
+        )
+
+    async def _launch_browser(self) -> Browser:
+        """Launch Chromium with its sandbox enabled, falling back only if it fails.
+
+        Chromium's sandbox needs an unprivileged user namespace. The service now
+        runs as a dedicated non-root user, which removes the usual reason
+        ``--no-sandbox`` was required in a container, but some kernels and
+        seccomp profiles still refuse ``clone(CLONE_NEWUSER)``. Rather than
+        disabling the sandbox for everyone, try the safe configuration first and
+        record loudly when a host forces the fallback.
+        """
+        try:
+            browser = await self._playwright.chromium.launch(
+                headless=False,
+                args=list(_STABILITY_ARGS),
+            )
+            self._sandbox_disabled = False
+            _LOGGER.info("Chromium launched with its sandbox enabled")
+            return browser
+        except Exception as err:
+            _LOGGER.warning(
+                "Chromium refused to start with its sandbox enabled (%s). "
+                "Retrying without the sandbox: the browser process is then "
+                "isolated only by the container itself. It runs as an "
+                "unprivileged user with no capabilities and is stopped as soon "
+                "as authentication finishes.",
+                err,
+            )
+        browser = await self._playwright.chromium.launch(
+            headless=False,
+            args=list(_STABILITY_ARGS) + list(_SANDBOX_FALLBACK_ARGS),
+        )
+        self._sandbox_disabled = True
+        return browser
 
     async def start_auth_session(self) -> str:
         """Start a new authentication session."""
@@ -51,54 +173,17 @@ class BrowserAuthManager:
         context = None
         page = None
         try:
-            # Launch browser (non-headless so user can interact)
-            # Extensive flags for virtualized/nested VM environments (VirtualBox, VMware, etc.)
-            # These prevent crashes caused by GPU acceleration and missing system services
-            browser = await self._playwright.chromium.launch(
-                headless=False,
-                args=[
-                    # Sandbox settings
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    # Memory and shared memory
-                    '--disable-dev-shm-usage',
-                    # GPU and rendering - critical for VMs without GPU passthrough
-                    '--disable-gpu',
-                    '--disable-gpu-compositing',
-                    '--disable-gpu-sandbox',
-                    '--disable-software-rasterizer',
-                    '--disable-accelerated-2d-canvas',
-                    '--disable-accelerated-video-decode',
-                    '--disable-accelerated-video-encode',
-                    # Skia and rendering - addresses SEGV crashes in VMs
-                    '--disable-skia-runtime-opts',
-                    '--disable-partial-raster',
-                    '--disable-zero-copy',
-                    '--disable-lcd-text',
-                    '--disable-font-subpixel-positioning',
-                    # Consolidated disable-features flag
-                    '--disable-features=VizDisplayCompositor,dbus,IsolateOrigins,site-per-process,UseSkiaRenderer,TranslateUI',
-                    # System services
-                    '--disable-breakpad',
-                    '--disable-component-update',
-                    # Anti-detection
-                    '--disable-blink-features=AutomationControlled',
-                    # Stability flags
-                    '--disable-background-networking',
-                    '--disable-default-apps',
-                    '--disable-extensions',
-                    '--disable-sync',
-                    '--no-first-run',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-renderer-backgrounding',
-                    '--disable-background-timer-throttling',
-                    # Memory optimization
-                    '--memory-pressure-off',
-                    '--disable-low-res-tiling',
-                    # ARM64 / RPi compatibility
-                    '--ozone-platform=x11',
-                ]
-            )
+            # Bring the display stack up only for the duration of the login, so
+            # there is no observable framebuffer while no session is running.
+            # Inside the try, so a failure here is logged like any other.
+            if self._display_stack is not None:
+                if not await self._display_stack.start():
+                    raise RuntimeError(
+                        "The browser display could not be started; check the "
+                        "add-on log for the display-stack messages."
+                    )
+
+            browser = await self._launch_browser()
 
             # Create context with realistic user agent
             context = await browser.new_context(
@@ -118,13 +203,14 @@ class BrowserAuthManager:
                 'page': page,
                 'status': 'authenticating',
                 'cookies': None,
+                'cookie_count': 0,
                 'error': None,
                 'created_at': time.time(),
             }
 
             # Listen for new tabs/popups
             def on_page(new_page):
-                _LOGGER.info(f"New tab detected, switching monitoring to new page")
+                _LOGGER.info("New tab detected, switching monitoring to new page")
                 self._sessions[session_id]['page'] = new_page
 
             context.on("page", on_page)
@@ -143,7 +229,12 @@ class BrowserAuthManager:
             return session_id
 
         except Exception as e:
-            _LOGGER.error(f"Failed to start auth session: {e}")
+            # Include the type: some exceptions (ProcessLookupError,
+            # asyncio.TimeoutError) have an empty string form, and a bare
+            # "Failed to start auth session: " tells nobody anything.
+            _LOGGER.error(
+                "Failed to start auth session: %s: %s", type(e).__name__, e
+            )
             # Cleanup browser resources on failure to prevent leaks
             try:
                 if page:
@@ -154,6 +245,8 @@ class BrowserAuthManager:
                     await browser.close()
             except Exception as cleanup_err:
                 _LOGGER.warning(f"Cleanup after failed session start: {cleanup_err}")
+            self._sessions.pop(session_id, None)
+            await self._stop_display_if_idle()
             raise
 
     async def _monitor_authentication(self, session_id: str):
@@ -167,11 +260,7 @@ class BrowserAuthManager:
         try:
             _LOGGER.info(f"Monitoring authentication for session {session_id}")
 
-            # Wait for successful login - multiple possible indicators
-            # We'll wait for URL change or specific elements that indicate success
-            max_wait_time = self._auth_timeout * 1000  # Convert to milliseconds
-
-            # Wait for URL to contain "families.google.com" and not be on login page
+            # Wait for URL change or specific elements that indicate success
             await asyncio.sleep(5)  # Give initial page time to load
 
             # Poll for authentication completion
@@ -185,12 +274,16 @@ class BrowserAuthManager:
                 page: Page = session['page']
                 current_url = page.url
 
-                # Log URL changes at INFO, repeated polls at DEBUG
+                # Log URL changes at INFO, repeated polls at DEBUG. The query
+                # string is stripped: Google's login URLs carry continuation
+                # tokens and identifiers that must not reach a log file.
                 if current_url != last_url:
-                    _LOGGER.info(f"URL changed to: {current_url}")
+                    _LOGGER.info(
+                        "URL changed to: %s", redaction.redact_url(current_url)
+                    )
                     last_url = current_url
                 else:
-                    _LOGGER.debug(f"Polling - URL unchanged")
+                    _LOGGER.debug("Polling - URL unchanged")
 
                 # Method 1: URL-based detection
                 # Check if we're past the login page
@@ -199,50 +292,35 @@ class BrowserAuthManager:
                         'families.google.com',
                         'myaccount.google.com',
                     ]):
-                        _LOGGER.info(f"Authentication detected via URL: {current_url}")
-
-                        # Navigate to families.google.com to ensure cookies are properly configured
-                        _LOGGER.info("Navigating to families.google.com to finalize cookie configuration...")
-                        try:
-                            await page.goto('https://families.google.com/families/', wait_until='load', timeout=15000)
-                            _LOGGER.info("Successfully navigated to families.google.com")
-                            await asyncio.sleep(2)
-                        except Exception as e:
-                            _LOGGER.warning(f"Failed to navigate to families.google.com: {e}")
-
+                        _LOGGER.info("Authentication detected via URL")
+                        await self._finalise_cookies(page)
                         authenticated = True
                         break
 
                 # Method 2: Cookie-based detection (fallback)
-                # Google sets auth cookies (SID, HSID, etc.) after successful login
-                # even before the URL redirect completes
+                # Google sets auth cookies (SID, HSID, etc.) after successful
+                # login even before the URL redirect completes.
                 try:
-                    cookies = await context.cookies()
+                    current_cookies = await context.cookies()
                     google_auth_cookies = [
-                        c for c in cookies
+                        c for c in current_cookies
                         if c.get('name') in GOOGLE_AUTH_COOKIE_NAMES
                         and '.google.com' in c.get('domain', '')
                     ]
                     if len(google_auth_cookies) >= 3:
                         _LOGGER.info(
-                            f"Authentication detected via cookies "
-                            f"({len(google_auth_cookies)} auth cookies found: "
-                            f"{[c['name'] for c in google_auth_cookies]})"
+                            "Authentication detected via cookies (%d auth "
+                            "cookies found: %s)",
+                            len(google_auth_cookies),
+                            ", ".join(cookie_rules.cookie_names(google_auth_cookies)),
                         )
-
-                        # Navigate to families.google.com to finalize cookies
-                        _LOGGER.info("Navigating to families.google.com to finalize cookie configuration...")
-                        try:
-                            await page.goto('https://families.google.com/families/', wait_until='load', timeout=15000)
-                            _LOGGER.info("Successfully navigated to families.google.com")
-                            await asyncio.sleep(2)
-                        except Exception as e:
-                            _LOGGER.warning(f"Failed to navigate to families.google.com: {e}")
-
+                        await self._finalise_cookies(page)
                         authenticated = True
                         break
                 except Exception as e:
                     _LOGGER.debug(f"Cookie check failed: {e}")
+                finally:
+                    current_cookies = None
 
                 await asyncio.sleep(2)  # Check every 2 seconds
 
@@ -251,20 +329,29 @@ class BrowserAuthManager:
 
             # Extract cookies
             _LOGGER.info("Authentication detected, extracting cookies...")
-            cookies = await context.cookies()
+            captured = await context.cookies()
 
-            # Filter relevant Google cookies
-            google_cookies = [
-                c for c in cookies
-                if any(domain in c.get('domain', '') for domain in [
-                    'google.com', 'families.google.com', 'accounts.google.com'
-                ])
-            ]
+            # Minimise before anything else touches them: only the Family Link
+            # cookies are persisted, never the rest of the Google account.
+            google_cookies = cookie_rules.filter_cookies(
+                captured, self._allowlist_mode
+            )
+            cookie_rules.scrub(captured)
+            captured = None
 
             if not google_cookies:
                 raise Exception("No valid Google cookies found")
 
-            _LOGGER.info(f"Extracted {len(google_cookies)} Google cookies")
+            _LOGGER.info(
+                "Captured %d Family Link cookies (%s)",
+                len(google_cookies),
+                ", ".join(cookie_rules.cookie_names(google_cookies)),
+            )
+
+            # Register the values so they are scrubbed from any log line that
+            # might otherwise carry them (a Playwright error, a traceback).
+            for cookie in google_cookies:
+                redaction.register_secret(cookie.get("value"))
 
             # Save to shared storage (use injected instance to avoid config mismatch)
             if self._storage:
@@ -274,9 +361,14 @@ class BrowserAuthManager:
                 storage = SharedStorage()
                 await storage.save_cookies(google_cookies)
 
-            # Update session
+            # Update session. The values are dropped immediately: the session
+            # record only needs the count, and holding them would keep a live
+            # Google session in memory for the lifetime of the process.
             session['status'] = 'completed'
-            session['cookies'] = google_cookies
+            session['cookie_count'] = len(google_cookies)
+            cookie_rules.scrub(google_cookies)
+            google_cookies = None
+            session['cookies'] = None
 
             _LOGGER.info(f"Authentication completed successfully for session {session_id}")
 
@@ -295,6 +387,18 @@ class BrowserAuthManager:
             session['error'] = str(e)
             _LOGGER.error(f"Authentication error for session {session_id}: {e}")
             await self._cleanup_session(session_id)
+
+    async def _finalise_cookies(self, page: Page) -> None:
+        """Navigate to families.google.com so Google finalises the cookie set."""
+        _LOGGER.info("Navigating to families.google.com to finalize cookie configuration...")
+        try:
+            await page.goto(
+                'https://families.google.com/families/', wait_until='load', timeout=15000
+            )
+            _LOGGER.info("Successfully navigated to families.google.com")
+            await asyncio.sleep(2)
+        except Exception as e:
+            _LOGGER.warning(f"Failed to navigate to families.google.com: {e}")
 
     def _on_monitor_done(self, session_id: str, task: asyncio.Task):
         """Handle monitor task completion, log unhandled errors."""
@@ -324,15 +428,21 @@ class BrowserAuthManager:
         if not session:
             return {'status': 'not_found'}
 
-        # Cleaned-up sessions only retain minimal metadata (no 'cookies' key),
-        # so read defensively to avoid a KeyError → HTTP 500 in the status poll
-        cookie_count = session.get('cookie_count', len(session.get('cookies') or []))
+        cookie_count = session.get('cookie_count', 0)
         return {
             'status': session.get('status', 'unknown'),
             'has_cookies': cookie_count > 0,
             'error': session.get('error'),
             'cookie_count': cookie_count
         }
+
+    async def _stop_display_if_idle(self) -> None:
+        """Stop the display stack once no authentication session is running."""
+        if self._display_stack is None:
+            return
+        if self.has_active_session():
+            return
+        await self._display_stack.stop()
 
     async def _cleanup_session(self, session_id: str):
         """Clean up session resources."""
@@ -350,18 +460,23 @@ class BrowserAuthManager:
                 _LOGGER.warning(f"Cleanup error for session {session_id}: {e}")
             finally:
                 # Retain only minimal metadata, discard heavy objects
+                cookie_rules.scrub(session.get('cookies'))
                 self._sessions[session_id] = {
                     'status': session.get('status', 'cleaned_up'),
                     'created_at': session.get('created_at'),
                     'error': session.get('error'),
-                    'cookie_count': len(session.get('cookies') or []),
+                    'cookie_count': session.get('cookie_count', 0),
                 }
+        await self._stop_display_if_idle()
 
     async def cleanup(self):
         """Cleanup all resources."""
         _LOGGER.info("Cleaning up all sessions...")
         for session_id in list(self._sessions.keys()):
             await self._cleanup_session(session_id)
+
+        if self._display_stack is not None:
+            await self._display_stack.stop()
 
         if self._playwright:
             await self._playwright.stop()

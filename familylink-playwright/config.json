@@ -1,6 +1,6 @@
 {
   "name": "Google Family Link Auth",
-  "version": "1.8.1",
+  "version": "2.0.0",
   "slug": "familylink-playwright",
   "description": "Authentication service for Google Family Link integration using browser automation",
   "url": "https://github.com/noiwid/HAFamilyLink",
@@ -9,13 +9,15 @@
   "startup": "application",
   "boot": "auto",
   "init": false,
+  "ingress": true,
+  "ingress_port": 8099,
+  "panel_icon": "mdi:account-child-circle",
+  "panel_title": "Family Link Auth",
   "ports": {
-    "8099/tcp": 8099,
-    "6080/tcp": 6080
+    "8099/tcp": null
   },
   "ports_description": {
-    "8099/tcp": "Web interface for Google authentication",
-    "6080/tcp": "noVNC web interface for browser access"
+    "8099/tcp": "Web interface, REST API and browser view. Left unmapped on purpose: the add-on is reached through Home Assistant ingress, which authenticates you first. Only map a host port if the Home Assistant integration runs on another machine, and then give it the service API token."
   },
   "map": ["share:rw"],
   "options": {
@@ -24,7 +26,7 @@
     "session_duration": 86400,
     "language": "",
     "timezone": "",
-    "vnc_password": "familylink"
+    "cookie_allowlist_mode": "strict"
   },
   "schema": {
     "log_level": "list(trace|debug|info|warning|error)?",
@@ -32,9 +34,9 @@
     "session_duration": "int(3600,604800)?",
     "language": "str?",
     "timezone": "str?",
+    "cookie_allowlist_mode": "list(strict|legacy)?",
     "vnc_password": "password?"
   },
-  "webui": "http://[HOST]:[PORT:8099]",
   "host_network": false,
   "hassio_api": true,
   "hassio_role": "default"

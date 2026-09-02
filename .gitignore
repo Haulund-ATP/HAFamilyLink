@@ -66,3 +66,14 @@ Thumbs.db
 .claude/
 CLAUDE.md
 FORUM_POST.md
+
+# Family Link auth-service secrets (never commit these)
+api_key
+.key
+cookies.enc
+familylink-playwright/data/
+data/api_key
+
+# Local tooling
+.venv-sec/
+.venv-app/
