@@ -1,0 +1,18 @@
+# Test and tooling dependencies.
+#
+# The auth service's own runtime dependencies come from
+# familylink-playwright/requirements.txt, which is installed with
+# --require-hashes; these are development-only and deliberately not pinned by
+# hash so a security fix in a linter does not need a lock regeneration.
+pytest>=8.0
+httpx>=0.27
+websockets>=12.0
+
+# The integration modules import homeassistant, so the integration-side tests
+# need it present. It is a large install; the add-on tests do not require it.
+homeassistant>=2024.1
+
+# Scanners and linters, matching what the CI workflow runs.
+ruff>=0.6
+bandit>=1.7
+pip-audit>=2.7
