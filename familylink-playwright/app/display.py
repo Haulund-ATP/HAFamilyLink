@@ -147,7 +147,7 @@ class DisplayStack:
             # is fixed by X, not a temporary file this code creates, so there
             # is no predictable-name risk to mitigate here.
             socket_path = Path(
-                f"/tmp/.X11-unix/X{self._display.lstrip(':')}"  # noqa: S108
+                f"/tmp/.X11-unix/X{self._display.lstrip(':')}"  # noqa: S108  # nosec B108
             )
             if not self._running and not socket_path.exists():
                 return

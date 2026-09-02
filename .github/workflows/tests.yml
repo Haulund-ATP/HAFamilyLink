@@ -122,8 +122,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # hassfest lives in a subdirectory of that repository; the repository
+      # root has no action.yml, and an unresolvable action fails the job before
+      # continue-on-error can apply.
       - name: Home Assistant hassfest validation
-        uses: home-assistant/actions@a7c616ce81ccda50150bf1595786c71b1883fabb # 1.0.0
+        uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb # 1.0.0
         continue-on-error: true
 
       - name: HACS validation
