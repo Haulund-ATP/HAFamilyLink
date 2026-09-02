@@ -2,6 +2,44 @@
 
 All notable changes to the Google Family Link Auth Add-on will be documented in this file.
 
+## [2.0.0] - 2026-09-02
+
+Security-hardening release. Read [Migrating from 1.x](https://github.com/noiwid/HAFamilyLink/blob/main/DOCKER_STANDALONE.md#migrating-from-1x) for standalone Docker, and the [upgrade notes](https://github.com/noiwid/HAFamilyLink/blob/main/INSTALL.md#upgrading-from-a-version-before-200) for the add-on. Existing logins are not invalidated by the upgrade itself, but a session older than `session_duration` now has to be redone - see below.
+
+### Security
+
+- **Every endpoint except `GET /api/health` now requires authentication.** `POST /api/auth/start`, `GET /api/auth/status/{id}`, `GET /api/cookies`, `DELETE /api/cookies` and `GET /api/cookies/check` were previously reachable without credentials in at least some configurations - `/api/cookies/check` in all of them, and `/api/cookies` itself in standalone mode unless `API_KEY` happened to be set. `/api/cookies` returns a live Google session, so on a home network the supervised child could read it and lift their own restrictions.
+- **One authentication mechanism, and it fails closed.** A 256-bit service token is generated on first start and persisted to `/share/familylink/api_key` (mode 0600, atomic write, symlinks refused). If it cannot be generated, written or read, the service refuses to start instead of coming up unprotected. Standalone installs get the same treatment - no more "open by default with a warning in the log".
+- **Tokens are no longer accepted in a query string.** A credential in a URL leaks through browser history, proxy logs and `Referer` headers. `?api_key=` is now refused with HTTP 400 even when the value is correct; the browser UI trades the token once for an httpOnly, SameSite=Strict session cookie via `POST /api/session`. Existing integration configurations of the form `http://host:8099?api_key=...` are migrated automatically.
+- **Token comparison is constant-time, and attempts are rate-limited** (ten failures per minute per client address, answered with HTTP 429 and `Retry-After`).
+- **The unauthenticated noVNC port 6080 is gone.** It served a live view of - and control over - a browser holding a Google session to anyone who could reach it. noVNC and its WebSocket bridge are now served by the service itself at `/vnc`, behind the same authentication, and only one observer is admitted at a time.
+- **The VNC password is gone, including the publicly known default `familylink`.** The VNC server binds to loopback with no RFB authentication and is reachable only through the authenticated bridge. This also removes VNC's 8-character DES password limit, which silently truncated anything longer. The `vnc_password` option still validates so existing configurations do not break, but it is ignored and logs a deprecation warning.
+- **Home Assistant ingress is used, and no host port is published by default.** Ingress authenticates the Home Assistant user before the request arrives. Ingress is trusted only while the host port is unpublished; map one and the add-on stops trusting the ingress header, because at that point anyone reaching the port could forge it.
+- **The display stack only exists during a login.** The X server, window manager and browser are started when authentication begins and torn down when it ends or times out, so there is no framebuffer to observe between logins.
+- **Chromium runs sandboxed, as an unprivileged user.** The service, the X server and the browser all run as a dedicated non-root account, which is what allowed `--no-sandbox` and `--disable-setuid-sandbox` to be removed. Cross-site process isolation is restored - `IsolateOrigins` and `site-per-process` are no longer disabled. The image also ships the SUID sandbox helper for kernels that refuse unprivileged user namespaces; if neither mechanism works the service logs a clear warning and continues unsandboxed rather than failing to authenticate.
+- **Only the Google cookies Family Link needs are stored.** A login sets cookies for Search, YouTube, ads personalisation and consent state; all of them used to be encrypted and handed to the integration. An explicit name and domain allowlist now applies, with `cookie_allowlist_mode: legacy` as a documented escape hatch for regional Google variations. Security metadata (`secure`, `httpOnly`, `sameSite`) is preserved. See [Cookie minimisation](https://github.com/noiwid/HAFamilyLink/blob/main/familylink-playwright/DOCS.md#cookie-minimisation) - the allowlist still needs testing against a real Google test account in other regions.
+- **`session_duration` is now enforced.** It previously did nothing. The stored envelope records creation and expiry; an expired session is deleted rather than merely reported, and so is one that cannot be decrypted or parsed, or that has no usable timestamp. Cookie responses are sent with `Cache-Control: no-store`.
+- **Log redaction.** Cookie values, `Cookie`/`Authorization` headers, `SAPISID` and `SAPISIDHASH` values, the service token and credential-bearing URLs are scrubbed centrally, including from exception tracebacks.
+- **Storage hardening.** The secret directory stays 0700 and secret files 0600; writes are atomic (`O_EXCL` temporary file in the same directory, then `os.replace`, with `fsync`); secrets are opened `O_NOFOLLOW` and a symlink found where a secret belongs is refused. Note that the encryption key lives beside the ciphertext, so read access to the whole directory still yields the session - documented rather than glossed over.
+- **Security headers** on every response: `Cache-Control: no-store`, `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, `X-Frame-Options: SAMEORIGIN`, and a Content-Security-Policy with a per-response nonce for the UI's inline script. The permissive CORS policy was removed - the UI is same-origin and the integration is a server-side client.
+
+### Changed
+
+- Dependencies updated to current supported versions (FastAPI 0.141.1, Starlette 1.6.0, Uvicorn 0.52.4, Pydantic 2.13.5, cryptography 50.0.1) and locked with hashes in `requirements.txt`, installed with `pip --require-hashes`. Playwright is pinned (1.58.0) instead of installed unversioned.
+- `aiofiles`, `jinja2` and `python-multipart` removed: unused.
+- Base images pinned by digest as well as tag; GitHub Actions pinned by commit SHA; Dependabot added for pip, Docker and Actions.
+- The mutable `:standalone` image tag is no longer published. Pin an explicit version, e.g. `2.0.0-standalone`.
+- The standalone compose file binds port 8099 to loopback, sets `init: true` (to reap the display stack's re-parented X processes) and `security_opt: [seccomp=unconfined]` (so Chromium can create the user namespaces its sandbox needs).
+- Startup and shutdown moved to a FastAPI lifespan handler, since Starlette 1.x removed `@app.on_event`.
+- Interactive API docs (`/docs`, `/redoc`, `/openapi.json`) are disabled: nothing consumed them, and they enumerated the protected endpoints.
+
+### Fixed
+
+- **The display stack could report a spurious failure and abort a login.** Its control script was run with a pipe for stdout, and the backgrounded X server and window manager inherit that pipe - so waiting for end-of-file blocked for the full timeout on every *successful* start. The timeout handler then called `kill()` on the already-exited script, raising a `ProcessLookupError` whose string form is empty, which surfaced as `Failed to start auth:` with no reason at all. Completion is now detected by waiting for the process to exit, with its output captured to a file, and the kill path tolerates the race.
+- **The log-redaction filter could break logging.** Redacting a `%`-style format string such as `"token=%s"` removed the placeholder while the argument was still present, so the record raised `TypeError` when a handler formatted it. The message is now interpolated first and the arguments dropped.
+- **Exception tracebacks were not redacted.** At filter time a traceback still lives in `exc_info`, not `exc_text`, so a secret in an exception message reached the log. It is now rendered, redacted and cached before any handler can print the original.
+- Dead X processes were reported as "did not stop" and needlessly signalled, because `kill -0` succeeds for an unreaped process. The liveness check now looks at process state.
+
 ## [1.8.1] - 2026-08-21
 
 ### Changed

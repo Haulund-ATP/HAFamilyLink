@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **The auth-service key is no longer part of the URL.** It was configured as `http://host:8099?api_key=<key>`, which puts a credential into browser history, proxy logs and `Referer` headers. It is now a separate secret field, sent as an `X-API-Key` header, and the auth service refuses a token in a query string outright. **Existing config entries are migrated automatically** on upgrade (config entry version 1 to 2): the key is moved out of the URL, and the unique id is rewritten so it no longer contains it.
+- **Expired sessions are handled as an explicit re-authentication state.** When the auth service reports that the stored session outlived `session_duration` (HTTP 410) - or when the encrypted file fallback finds an expired envelope - the integration clears its cached cookies and HTTP session, starts Home Assistant's re-authentication flow for the config entry, and raises the usual persistent notification. Previously the setting was documented but never enforced anywhere.
+- **Central log redaction.** A filter on the integration's logger scrubs every record before it is formatted: cookie values, `Cookie`/`Authorization` headers, `SAPISID` and `SAPISIDHASH` values, the service token, credential-bearing query strings, the supervised child's coordinates (in `(lat, lng)` and `[lat,lng]` form), saved-place names and addresses, and the child's display name and account id once discovered. Exception tracebacks are rendered, redacted and cached before any handler can print the original.
+- **Google API response bodies are no longer logged in full.** Twenty-two call sites dumped the raw body on error; those bodies embed the child's identifiers, device names, coordinates and the address of any saved place. They are now redacted and truncated to a short prefix.
+- **Coordinates are never logged.** `familylink.refresh_location` logged the exact latitude and longitude of a child at INFO level.
+- **Cached credentials are cleared properly.** `async_cleanup` now closes the HTTP session and drops the cached cookie dict, the prebuilt `Cookie` header, the account id and the schedule cache, overwriting cookie values on the way out. Without this a retry could keep replaying a session that had already been rejected.
+- **The options flow never displays the stored token.** The field is always empty; leaving it empty keeps the existing value rather than clearing it.
+- The `SAPISIDHASH` construction documents why SHA-1 is required by Google's protocol and passes `usedforsecurity=False`, so a scanner finding is explained rather than suppressed blindly.
+- A test suite (234 tests) covers endpoint authentication, the public health endpoint, invalid and missing credentials, legacy configuration migration, tokens being absent from URLs and logs, cookie expiry and deletion, corrupted cookie data, cookie allowlisting, file permissions, no-cache headers, VNC default-password rejection, authentication concurrency, log redaction, and the HAOS-versus-standalone configuration split.
+
+See [SECURITY.md](SECURITY.md) for the threat model and the risks that remain, and the [auth service changelog](familylink-playwright/CHANGELOG.md) for the add-on side of this work.
+
 ### Added
 - **Allowed calls and texts select entity (PR #150, by @mdo77)** - Each child gets `select.<child>_allowed_calls_texts` to choose who can call and text them: **Anyone**, **Only contacts I add** or **Contacts I add & limited groups**. The level is read from Google's `trustedcontacts` endpoint by the coordinator with the other per-child data (cache fallback and session-expiry handling included) and written back through `trustedcontacts:update`. An account where the setting was never touched reports level 0, shown as Anyone. Endpoint shape confirmed on a live capture.
 
