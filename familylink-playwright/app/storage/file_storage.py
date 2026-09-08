@@ -9,8 +9,10 @@ therefore yields both halves, and the encryption only protects against a leak
 of the cookie file alone (a backup, a snapshot, a stray copy). This is stated
 plainly in the documentation rather than implied to be more.
 
-The stored envelope carries the session lifetime, so ``session_duration`` is
-enforced on read instead of being a documented setting that did nothing.
+``session_duration`` is enforced on read, instead of being a documented
+setting that did nothing. The expiry is recomputed from the stored creation
+time and the *currently configured* duration, so changing the option affects
+the session already on disk rather than only the next login.
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ from typing import Any, Dict, List
 from cryptography.fernet import Fernet, InvalidToken
 
 from app import cookies as cookie_rules
+from app.config import DEFAULT_SESSION_DURATION
 from app.security import TokenError, read_secret_file, write_secret_file
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,7 +53,7 @@ class SharedStorage:
     def __init__(
         self,
         share_dir: str = "/share/familylink",
-        session_duration: int = 86400,
+        session_duration: int = DEFAULT_SESSION_DURATION,
         allowlist_mode: str = "strict",
     ):
         """Initialize storage manager."""
@@ -208,18 +211,22 @@ class SharedStorage:
     def _resolve_expiry(self, envelope: Dict[str, Any]) -> tuple[float, float]:
         """Return ``(created_at, expires_at)`` for any envelope version.
 
-        A v1 envelope has only an ISO ``timestamp``; its expiry is derived from
-        the currently configured ``session_duration``. An envelope whose
-        timestamps are missing or unparseable is treated as expired rather than
-        as eternally valid - the failure mode has to be re-authentication, not
-        an unbounded session.
+        The expiry is computed from the creation time and the *currently
+        configured* ``session_duration``, not from the ``expires_at`` stamped
+        in when the session was saved. That is what makes the option mean what
+        it says: raising it extends the session already on disk instead of
+        only applying to the next login, and lowering it takes effect at once.
+
+        The stored ``expires_at`` is kept in the envelope as a record of what
+        the policy was at save time, but it is not authoritative on read.
+
+        An envelope whose creation time is missing or unparseable is treated as
+        expired rather than as eternally valid - the failure mode has to be
+        re-authentication, not an unbounded session.
         """
         created_at = envelope.get("created_at")
-        expires_at = envelope.get("expires_at")
-        if isinstance(created_at, (int, float)) and isinstance(
-            expires_at, (int, float)
-        ):
-            return float(created_at), float(expires_at)
+        if isinstance(created_at, (int, float)) and created_at > 0:
+            return float(created_at), float(created_at) + self.session_duration
 
         raw_timestamp = envelope.get("timestamp")
         if isinstance(raw_timestamp, str):
@@ -229,8 +236,8 @@ class SharedStorage:
                     parsed = parsed.replace(tzinfo=timezone.utc)
                 legacy_created = parsed.timestamp()
                 _LOGGER.info(
-                    "Upgrading a legacy cookie envelope: expiry derived from "
-                    "its creation time and the configured session_duration"
+                    "Reading a legacy cookie envelope: expiry derived from its "
+                    "creation time and the configured session_duration"
                 )
                 return legacy_created, legacy_created + self.session_duration
             except (ValueError, OverflowError, OSError):

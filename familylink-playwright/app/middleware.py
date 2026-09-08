@@ -17,7 +17,13 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Iterable
 from urllib.parse import parse_qs
 
-from app.security import SESSION_COOKIE_NAME, RateLimiter, SessionStore, tokens_equal
+from app.security import (
+    SESSION_COOKIE_NAME,
+    SESSION_TTL_SECONDS,
+    RateLimiter,
+    SessionStore,
+    tokens_equal,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -234,7 +240,8 @@ class SecurityMiddleware:
         state["csp_nonce"] = secrets.token_urlsafe(16)
         outcome = self.guard.authenticate(headers, cookies, client_key)
         state["authenticated"] = outcome.authenticated
-        state["ingress_path"] = headers.get("x-ingress-path", "")
+        ingress_path = headers.get("x-ingress-path", "")
+        state["ingress_path"] = ingress_path
 
         if not outcome.authenticated and not self._is_public(scope):
             await self._reject(
@@ -242,9 +249,34 @@ class SecurityMiddleware:
             )
             return
 
-        await self.app(scope, receive, self._wrap_send(scope, send))
+        # Give an ingress page load a session cookie, so the framebuffer
+        # upgrade authenticates on the cookie rather than on the Supervisor
+        # forwarding X-Ingress-Path onto a WebSocket handshake.
+        session_cookie = None
+        if (
+            scope["type"] == "http"
+            and self.guard.is_ingress(headers)
+            and not self.guard.sessions.is_valid(cookies.get(SESSION_COOKIE_NAME))
+        ):
+            session_cookie = self._session_cookie_header(ingress_path)
 
-    def _wrap_send(self, scope: dict, send: Callable) -> Callable[[dict], Awaitable]:
+        await self.app(scope, receive, self._wrap_send(scope, send, session_cookie))
+
+    def _session_cookie_header(self, ingress_path: str) -> bytes:
+        """Build a Set-Cookie value for a freshly minted UI session."""
+        session_id = self.guard.sessions.create()
+        path = ingress_path if ingress_path.startswith("/") else "/"
+        return (
+            f"{SESSION_COOKIE_NAME}={session_id}; Path={path}; "
+            f"Max-Age={SESSION_TTL_SECONDS}; HttpOnly; SameSite=Strict"
+        ).encode("latin-1")
+
+    def _wrap_send(
+        self,
+        scope: dict,
+        send: Callable,
+        session_cookie: bytes | None = None,
+    ) -> Callable[[dict], Awaitable]:
         """Attach the security headers to every HTTP response."""
         if scope["type"] != "http":
             return send
@@ -260,6 +292,8 @@ class SecurityMiddleware:
                         headers.append((key, value))
                 if b"content-security-policy" not in existing:
                     headers.append((b"content-security-policy", self._csp(path, scope)))
+                if session_cookie is not None:
+                    headers.append((b"set-cookie", session_cookie))
                 message = {**message, "headers": headers}
             await send(message)
 
@@ -286,6 +320,18 @@ class SecurityMiddleware:
             # 1008 = policy violation. A browser cannot attach an X-API-Key
             # header to a handshake, so an unauthenticated framebuffer request
             # means the UI session cookie is missing or expired.
+            #
+            # This is logged because it is otherwise invisible: the browser
+            # only reports "Failed to connect to server", which looks
+            # identical to the framebuffer simply not running.
+            _LOGGER.warning(
+                "Refused an unauthenticated framebuffer connection to %s from "
+                "%s (%s). Open the browser view from the add-on's web UI so it "
+                "carries a session, rather than from a bookmarked URL.",
+                scope.get("path", ""),
+                _client_key(scope),
+                detail,
+            )
             await send({"type": "websocket.close", "code": 1008})
             return
 

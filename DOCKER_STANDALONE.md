@@ -27,7 +27,7 @@ services:
     # Pin an explicit version. There is deliberately no mutable ":standalone"
     # tag any more: a moving production tag means an unreviewed image rolls out
     # on the next `docker compose pull`.
-    image: ghcr.io/noiwid/familylink-auth:2.0.0-standalone
+    image: ghcr.io/noiwid/familylink-auth:2.0.1-standalone
     container_name: familylink-auth
     # Reap the display stack's X processes, which are re-parented to PID 1.
     init: true
@@ -48,7 +48,7 @@ services:
     environment:
       - LOG_LEVEL=info
       - AUTH_TIMEOUT=300
-      - SESSION_DURATION=86400
+      - SESSION_DURATION=604800
       - LANGUAGE=en-US
       - TIMEZONE=Europe/Paris
       - COOKIE_ALLOWLIST_MODE=strict
@@ -85,14 +85,14 @@ docker run -d \
   -v $(pwd)/data:/share/familylink:rw \
   -e LOG_LEVEL=info \
   -e AUTH_TIMEOUT=300 \
-  -e SESSION_DURATION=86400 \
+  -e SESSION_DURATION=604800 \
   -e LANGUAGE=en-US \
   -e TIMEZONE=Europe/Paris \
   -e COOKIE_ALLOWLIST_MODE=strict \
   --dns 8.8.8.8 \
   --dns 8.8.4.4 \
   --restart unless-stopped \
-  ghcr.io/noiwid/familylink-auth:2.0.0-standalone
+  ghcr.io/noiwid/familylink-auth:2.0.1-standalone
 ```
 
 Both `linux/amd64` and `linux/arm64` are supported; Docker pulls the right image automatically.
@@ -107,7 +107,7 @@ The service runs as a dedicated unprivileged user (`familylink`, uid 1000) insid
 |---|---|---|
 | `LOG_LEVEL` | `info` | Logging level (`debug`, `info`, `warning`, `error`) |
 | `AUTH_TIMEOUT` | `300` | Seconds you have to finish the Google login before the session times out. Clamped to 60–600 |
-| `SESSION_DURATION` | `86400` | How long a captured Google session may be used before re-authentication is required. **Enforced** since 2.0.0. Clamped to 3600–604800. A local limit only — Google can invalidate a session sooner; see [Cookie expiry](SECURITY.md#cookie-expiry-and-deletion) |
+| `SESSION_DURATION` | `604800` (7 days) | How long a captured Google session may be used before re-authentication is required. **Enforced** since 2.0.0, and read live so a change also affects the session already stored. Clamped to 3600–604800. A local limit only — Google can invalidate a session sooner, and nothing renews it automatically; see [Cookie expiry](SECURITY.md#cookie-expiry-and-deletion) |
 | `LANGUAGE` | `en-US` | Browser locale for the Google login pages |
 | `TIMEZONE` | `Europe/Paris` | Container and browser timezone |
 | `COOKIE_ALLOWLIST_MODE` | `strict` | `strict` stores only the Google cookies Family Link needs; `legacy` stores every `google.com` cookie, as 1.x did. See [cookie minimisation](familylink-playwright/DOCS.md#cookie-minimisation) |
@@ -184,7 +184,7 @@ Nothing needs to be re-authenticated, but three things change:
 1. **Port 6080 is gone.** Remove the `- "6080:6080"` mapping from your compose file. noVNC is now at `http://<docker-host>:8099/vnc/` and reachable through the web UI's **Open noVNC** link.
 2. **`VNC_PASSWORD` is ignored.** Remove it. The container logs a deprecation warning if it is still set.
 3. **The API key is now mandatory and is generated for you.** If you were running without `API_KEY`, a token is generated on first start into `./data/api_key`; take it from there and put it in the integration's token field. If you were running *with* `API_KEY`, it keeps working (also under its new name `API_TOKEN`), but the integration must now send it as a header — the `?api_key=` URL form is refused. The integration migrates an existing entry automatically on upgrade; nothing to do by hand.
-4. **The image tag changed.** Replace `:standalone` with an explicit version such as `:2.0.0-standalone`.
+4. **The image tag changed.** Replace `:standalone` with an explicit version such as `:2.0.1-standalone`.
 5. **Recommended:** bind the port to loopback (`127.0.0.1:8099:8099`) unless Home Assistant runs on another machine, and add `init: true` and `security_opt: [seccomp=unconfined]`.
 
 Your existing `cookies.enc` keeps working. On first read its expiry is derived from its stored timestamp and your `SESSION_DURATION`, so a session older than that is deleted and you are asked to sign in again — which is the intended behaviour, since 1.x never enforced the setting at all.
@@ -248,7 +248,7 @@ Add `security_opt: [seccomp=unconfined]` (compose) or `--security-opt seccomp=un
 
 | Tag | Description |
 |---|---|
-| `<version>-standalone` | Standalone image as of repository release `v<version>`, e.g. `2.0.0-standalone`. **Use this.** |
+| `<version>-standalone` | Standalone image as of repository release `v<version>`, e.g. `2.0.1-standalone`. **Use this.** |
 | `<version>` | Add-on image as of repository release `v<version>` (for HA OS/Supervised only) |
 | `latest` | Latest add-on image (for HA OS/Supervised only) |
 

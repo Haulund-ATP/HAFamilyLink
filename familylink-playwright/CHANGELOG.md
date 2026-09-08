@@ -2,6 +2,23 @@
 
 All notable changes to the Google Family Link Auth Add-on will be documented in this file.
 
+## [2.0.1] - 2026-09-08
+
+Fixes a usability regression introduced in 2.0.0, plus the browser-view
+confusion that came with it.
+
+### Fixed
+
+- **The session no longer expires after 24 hours.** 2.0.0 made `session_duration` actually work - it had been documented but inert - and kept its 86400-second default. The effect was that a Google session which Google itself would have honoured for weeks was deleted daily, so re-authenticating became a daily chore involving a browser and a 2FA prompt. The default is now 604800 (7 days, the documented maximum). Nothing renews the session automatically, so a short local lifetime costs an interactive login without reducing what a stolen session can do; if you want one, set it deliberately.
+- **Changing `session_duration` now affects the session already stored.** The expiry was stamped into the envelope at save time and trusted on read, so raising the option did nothing until the next interactive login - exactly the situation someone raises it to escape. The expiry is recomputed from the stored creation time and the current setting, so raising it extends the stored session and lowering it can expire it at once.
+- **The browser view no longer offers a link that cannot work.** Opening it before starting a login - or after the login timed out - produced noVNC's bare "Failed to connect to server", because by design there is no framebuffer between sessions. The link is now inert until a session is running and says why, and the log explains the cause instead of leaving it to be inferred.
+- **WebSocket authentication failures were completely silent.** A rejected framebuffer handshake logged nothing at all, so the one failure mode that matters could not be diagnosed from the add-on log; the browser only reports "Failed to connect to server", which looks identical to the framebuffer not running. Both cases are now logged distinctly.
+- **The instructions no longer imply a browser opens on your computer.** "A browser window will open with the Google login page" reads as a local window; Chromium runs inside the add-on, and the view has to be opened explicitly.
+
+### Changed
+
+- An ingress page load now mints the UI session cookie, so the framebuffer's WebSocket authenticates on that cookie rather than on the Supervisor forwarding `X-Ingress-Path` onto an upgrade request - an assumption about proxy behaviour this code could not verify.
+
 ## [2.0.0] - 2026-09-02
 
 Security-hardening release. Read [Migrating from 1.x](https://github.com/noiwid/HAFamilyLink/blob/main/DOCKER_STANDALONE.md#migrating-from-1x) for standalone Docker, and the [upgrade notes](https://github.com/noiwid/HAFamilyLink/blob/main/INSTALL.md#upgrading-from-a-version-before-200) for the add-on. Existing logins are not invalidated by the upgrade itself, but a session older than `session_duration` now has to be redone - see below.

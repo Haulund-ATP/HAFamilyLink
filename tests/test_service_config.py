@@ -43,7 +43,8 @@ def clean_env(monkeypatch):
 
 class TestSessionDuration:
     def test_default(self, clean_env):
-        assert get_config().session_duration == 86400
+        """A week, not a day: renewal needs a human at a browser."""
+        assert get_config().session_duration == 604800
 
     def test_valid_value_is_honoured(self, clean_env):
         clean_env.setenv("SESSION_DURATION", "7200")
@@ -69,7 +70,7 @@ class TestSessionDuration:
     def test_garbage_falls_back_to_the_default(self, clean_env):
         clean_env.setenv("SESSION_DURATION", "forever")
 
-        assert get_config().session_duration == 86400
+        assert get_config().session_duration == 604800
 
 
 class TestAuthTimeout:

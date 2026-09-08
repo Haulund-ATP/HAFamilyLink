@@ -1,11 +1,14 @@
 {
   "name": "Google Family Link Auth",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "slug": "familylink-playwright",
   "description": "Authentication service for Google Family Link integration using browser automation",
   "url": "https://github.com/noiwid/HAFamilyLink",
   "image": "ghcr.io/noiwid/familylink-auth",
-  "arch": ["amd64", "aarch64"],
+  "arch": [
+    "amd64",
+    "aarch64"
+  ],
   "startup": "application",
   "boot": "auto",
   "init": false,
@@ -19,11 +22,13 @@
   "ports_description": {
     "8099/tcp": "Web interface, REST API and browser view. Left unmapped on purpose: the add-on is reached through Home Assistant ingress, which authenticates you first. Only map a host port if the Home Assistant integration runs on another machine, and then give it the service API token."
   },
-  "map": ["share:rw"],
+  "map": [
+    "share:rw"
+  ],
   "options": {
     "log_level": "info",
     "auth_timeout": 300,
-    "session_duration": 86400,
+    "session_duration": 604800,
     "language": "",
     "timezone": "",
     "cookie_allowlist_mode": "strict"

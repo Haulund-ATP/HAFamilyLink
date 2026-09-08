@@ -244,6 +244,76 @@ class TestCookieLifetime:
             )
 
 
+class TestDurationIsReadLive:
+    """Changing session_duration must affect the session already stored.
+
+    2.0.0 stamped the expiry in at save time and trusted it on read, so raising
+    the option did nothing until the next interactive login - which is exactly
+    the situation someone raises it to get out of.
+    """
+
+    def test_raising_the_duration_extends_the_stored_session(self, share_dir):
+        short = SharedStorage(str(share_dir), session_duration=3600)
+        metadata = asyncio.run(short.save_cookies(full_session()))
+        past_old_expiry = metadata["created_at"] + 5400
+
+        with pytest.raises(CookiesExpired):
+            asyncio.run(short.load_cookies(now=past_old_expiry))
+
+    def test_a_longer_duration_keeps_a_session_the_old_one_would_reject(
+        self, share_dir
+    ):
+        short = SharedStorage(str(share_dir), session_duration=3600)
+        metadata = asyncio.run(short.save_cookies(full_session()))
+        past_old_expiry = metadata["created_at"] + 5400
+
+        # Same store, read by an instance configured with a longer lifetime.
+        longer = SharedStorage(str(share_dir), session_duration=604800)
+        cookies = asyncio.run(longer.load_cookies(now=past_old_expiry))
+
+        assert {c["name"] for c in cookies} >= {"SAPISID", "SID"}
+
+    def test_lowering_the_duration_expires_a_session_immediately(self, share_dir):
+        generous = SharedStorage(str(share_dir), session_duration=604800)
+        metadata = asyncio.run(generous.save_cookies(full_session()))
+        two_hours_on = metadata["created_at"] + 7200
+
+        strict = SharedStorage(str(share_dir), session_duration=3600)
+
+        with pytest.raises(CookiesExpired):
+            asyncio.run(strict.load_cookies(now=two_hours_on))
+
+    def test_metadata_reflects_the_configured_duration(self, share_dir):
+        short = SharedStorage(str(share_dir), session_duration=3600)
+        asyncio.run(short.save_cookies(full_session()))
+
+        longer = SharedStorage(str(share_dir), session_duration=604800)
+        info = asyncio.run(longer.metadata())
+
+        assert info["expires_in"] > 3600
+
+
+class TestDefaultDuration:
+    def test_the_default_is_a_week_not_a_day(self):
+        """A 24-hour default meant a daily interactive Google login."""
+        from app.config import DEFAULT_SESSION_DURATION, MAX_SESSION_DURATION
+
+        assert DEFAULT_SESSION_DURATION == 604800
+        assert DEFAULT_SESSION_DURATION == MAX_SESSION_DURATION
+
+    def test_the_addon_option_default_matches(self):
+        import json
+        from pathlib import Path
+
+        config = json.loads(
+            (
+                Path(__file__).resolve().parent.parent
+                / "familylink-playwright/config.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert config["options"]["session_duration"] == 604800
+
+
 class TestLegacyAndCorruptedEnvelopes:
     def _write_envelope(self, storage: SharedStorage, payload: dict) -> None:
         encrypted = Fernet(storage._encryption_key).encrypt(

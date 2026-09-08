@@ -70,7 +70,7 @@ Existing installations keep working; the migration is automatic. What changes:
 - **The auth-service key moves out of the URL.** A config entry of the form `http://host:8099?api_key=...` is rewritten on upgrade so the key lives in its own secret field and is sent as an `X-API-Key` header. Nothing to do by hand.
 - **The add-on is reached through ingress**, and no host port is published any more. Port 6080 is gone entirely - noVNC is served on 8099 behind the same authentication. If Home Assistant runs on a different machine than the add-on, see [temporarily exposing a host port](SECURITY.md#temporarily-exposing-a-host-port).
 - **`vnc_password` is ignored.** You can delete it from the add-on configuration.
-- **`session_duration` is now enforced.** A stored session older than that setting is deleted on first read, so you may be asked to sign in once after upgrading. That is the intended behaviour: before 2.0.0 the option did nothing.
+- **`session_duration` is now enforced.** A stored session older than that setting is deleted on first read, so you may be asked to sign in once after upgrading. That is the intended behaviour: before 2.0.0 the option did nothing. The default is 7 days (it was briefly 24 hours in 2.0.0, which forced a daily login - upgrade to 2.0.1).
 - **Only the Google cookies Family Link needs are stored.** See [cookie minimisation](familylink-playwright/DOCS.md#cookie-minimisation), including the `legacy` escape hatch if strict mode fails in your Google region.
 
 For standalone Docker there are compose-file changes as well: see [Migrating from 1.x](DOCKER_STANDALONE.md#migrating-from-1x).
@@ -122,7 +122,7 @@ The first data fetch runs during setup, so entities appear as soon as the flow c
 
 Sessions expire for two independent reasons, and both land you in the same place:
 
-- **The local lifetime elapsed.** The auth service enforces its `session_duration` option (default 24 hours). At that point the stored session is *deleted*, not just flagged, so it cannot be replayed.
+- **The local lifetime elapsed.** The auth service enforces its `session_duration` option (default 7 days). At that point the stored session is *deleted*, not just flagged, so it cannot be replayed. Nothing renews it automatically, so this is a manual login: raise the option if you are being asked too often, and note that it is read live, so a change also extends the session already stored.
 - **Google invalidated it.** Google can end a session sooner - after a password change, a security review, or a sign-out elsewhere. `session_duration` does not extend Google's own decision.
 
 What happens then:
