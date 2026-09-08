@@ -187,8 +187,21 @@ Consequences worth acting on:
 
 ## Cookie expiry and deletion
 
-The `session_duration` option (default 24 hours, range 1 hour to 7 days) is
-enforced, not merely documented. The stored envelope records when the session
+The `session_duration` option (default 7 days, range 1 hour to 7 days) is
+enforced, not merely documented.
+
+The default is deliberately the maximum. There is no automatic renewal: a new
+session requires a person to complete a Google login with two-factor
+authentication in the add-on's browser. A short local lifetime therefore buys
+very little - it does not reduce what a stolen session can do, only how long
+this project will keep replaying one it already holds - while costing an
+interactive login that often. 2.0.0 shipped a 24-hour default, which meant a
+daily re-login; if you want a shorter lifetime, set it deliberately.
+
+The expiry is recomputed from the stored creation time and the *currently
+configured* duration, so changing the option affects the session already on
+disk: raising it extends that session, and lowering it can expire it
+immediately. The stored envelope records when the session
 was created and when it expires; on every read:
 
 - a session past its expiry is **deleted** and the read fails, so an expired

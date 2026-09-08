@@ -87,7 +87,19 @@ async def relay(
             asyncio.open_connection(host, port), timeout=connect_timeout
         )
     except (OSError, asyncio.TimeoutError) as err:
-        _LOGGER.warning("Framebuffer is not reachable at %s:%s: %s", host, port, err)
+        # By design there is no framebuffer between logins, so this is the
+        # expected outcome of opening the browser view too early or after the
+        # session timed out. The browser can only show "Failed to connect to
+        # server", so spell out the cause here.
+        _LOGGER.warning(
+            "No framebuffer to connect to at %s:%s (%s). The browser view only "
+            "exists while an authentication session is running: click Start "
+            "Authentication first, and note that a session ends after "
+            "auth_timeout seconds.",
+            host,
+            port,
+            err,
+        )
         await websocket.close(code=1011)
         return
 

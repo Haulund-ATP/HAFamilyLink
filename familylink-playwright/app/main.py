@@ -34,7 +34,7 @@ from app.storage.file_storage import (
 from app.translations import get_translations
 from app.vnc_proxy import SingleObserverGuard, relay
 
-SERVICE_VERSION = "2.0.0"
+SERVICE_VERSION = "2.0.1"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -432,7 +432,8 @@ _STYLE = """
             background: #2196F3; color: white; text-decoration: none;
             border-radius: 6px; font-weight: 500; font-size: 14px;
         }
-        .novnc-link:hover { background: #1976D2; }
+        .novnc-link:hover:not(.disabled) { background: #1976D2; }
+        .novnc-link.disabled { background: #9e9e9e; cursor: not-allowed; }
         .novnc-hint { margin-top: 8px; font-size: 12px; color: #666; }
         code { background: #eef1f5; padding: 1px 5px; border-radius: 3px; }
 """
@@ -540,9 +541,10 @@ def _render_app(t: dict, nonce: str, ingress_path: str) -> str:
 
   <div class="info-box">
     &#128161; <strong>Note:</strong> {html.escape(t['info_note'])}<br>
-    <a id="novnc-link" class="novnc-link" href="{html.escape(novnc_url)}"
-       target="_blank" rel="noopener">&#128421; {html.escape(t['novnc_link_text'])}</a>
-    <div class="novnc-hint">{html.escape(t['novnc_hint'])}</div>
+    <a id="novnc-link" class="novnc-link disabled" href="{html.escape(novnc_url)}"
+       target="_blank" rel="noopener"
+       aria-disabled="true">&#128421; {html.escape(t['novnc_link_text'])}</a>
+    <div class="novnc-hint" id="novnc-hint">{html.escape(t['novnc_not_ready'])}</div>
   </div>
 </div>
 <script nonce="{nonce}">
@@ -561,6 +563,8 @@ const T = {{
   unknown_error: {_js(t['unknown_error'])},
   cookies_exist: {_js(t['cookies_exist'])},
   session_expired: {_js(t['session_expired'])},
+  novnc_not_ready: {_js(t['novnc_not_ready'])},
+  novnc_hint: {_js(t['novnc_hint'])},
   start_error: {_js(t['start_error'])}
 }};
 
@@ -590,6 +594,7 @@ async function startAuth() {{
     sessionId = data.session_id;
     showStatus(T.browser_open, 'info');
     button.textContent = T.waiting;
+    setNovncEnabled(true);
     statusCheckInterval = setInterval(checkAuthStatus, 2000);
   }} catch (error) {{
     showStatus(T.start_failed + error.message, 'error');
@@ -608,21 +613,42 @@ async function checkAuthStatus() {{
       clearInterval(statusCheckInterval);
       showStatus(T.auth_success.replace('{{count}}', data.cookie_count), 'success');
       button.textContent = T.auth_completed;
+      setNovncEnabled(false);
     }} else if (data.status === 'timeout') {{
       clearInterval(statusCheckInterval);
       showStatus(T.auth_timeout, 'error');
       button.disabled = false;
       button.textContent = T.retry_auth;
+      setNovncEnabled(false);
     }} else if (data.status === 'error') {{
       clearInterval(statusCheckInterval);
       showStatus(T.auth_error + (data.error || T.unknown_error), 'error');
       button.disabled = false;
       button.textContent = T.retry_auth;
+      setNovncEnabled(false);
     }}
   }} catch (error) {{
     // Transient poll failure; the next tick retries.
   }}
 }}
+
+// The browser view exists only while a login is running, so the link is
+// inert until one is - otherwise clicking it yields noVNC's opaque
+// "Failed to connect to server".
+function setNovncEnabled(enabled) {{
+  const link = document.getElementById('novnc-link');
+  const hint = document.getElementById('novnc-hint');
+  link.classList.toggle('disabled', !enabled);
+  link.setAttribute('aria-disabled', String(!enabled));
+  hint.textContent = enabled ? T.novnc_hint : T.novnc_not_ready;
+}}
+
+document.getElementById('novnc-link').addEventListener('click', (event) => {{
+  if (document.getElementById('novnc-link').classList.contains('disabled')) {{
+    event.preventDefault();
+    showStatus(T.novnc_not_ready, 'info');
+  }}
+}});
 
 document.getElementById('authButton').addEventListener('click', startAuth);
 
