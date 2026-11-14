@@ -34,7 +34,7 @@ from app.storage.file_storage import (
 from app.translations import get_translations
 from app.vnc_proxy import SingleObserverGuard, relay
 
-SERVICE_VERSION = "2.0.1"
+SERVICE_VERSION = "2.1.0"
 
 _LOGGER = logging.getLogger(__name__)
 

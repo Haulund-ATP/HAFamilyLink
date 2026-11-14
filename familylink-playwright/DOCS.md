@@ -42,7 +42,7 @@ Example add-on configuration:
 ```yaml
 log_level: info
 auth_timeout: 300
-session_duration: 604800
+session_duration: 2592000
 language: ""
 timezone: ""
 cookie_allowlist_mode: strict
@@ -52,7 +52,7 @@ cookie_allowlist_mode: strict
 |---|---|---|---|
 | `log_level` | list: `trace`, `debug`, `info`, `warning`, `error` | `info` | Logging level of the web service and startup scripts. |
 | `auth_timeout` | int, 60 to 600 | `300` | Seconds you have to finish the Google login before the session times out. |
-| `session_duration` | int, 3600 to 604800 | `604800` (7 days) | How long a captured Google session may be used before re-authentication is required. **Enforced** since add-on 2.0.0: an expired session is deleted, not merely reported. Read live, so changing it also affects the session already stored. This is a local limit only — Google can invalidate a session sooner, and nothing renews it automatically, so a shorter value simply means logging in by hand that often. See [Cookie expiry](https://github.com/noiwid/HAFamilyLink/blob/main/SECURITY.md#cookie-expiry-and-deletion). |
+| `session_duration` | int, 3600 to 31536000 | `2592000` (30 days) | How long a captured Google session may be used before re-authentication is required. **Enforced** since add-on 2.0.0: an expired session is deleted, not merely reported. Read live, so changing it also affects the session already stored. This is a local limit only — Google can invalidate a session sooner, and nothing renews it automatically, so a shorter value simply means logging in by hand that often. See [Cookie expiry](https://github.com/noiwid/HAFamilyLink/blob/main/SECURITY.md#cookie-expiry-and-deletion). |
 | `language` | string | `""` | Browser locale and web UI language. Empty: auto-detected from Home Assistant, fallback `en-US`. The web UI itself is translated in English and French; other locales fall back to English. |
 | `timezone` | string | `""` | Browser timezone. Empty: auto-detected from Home Assistant, fallback `Europe/Paris`. |
 | `cookie_allowlist_mode` | list: `strict`, `legacy` | `strict` | `strict` stores only the Google cookies Family Link needs. `legacy` stores every `google.com` cookie, as versions before 2.0.0 did. See [Cookie minimisation](#cookie-minimisation). |

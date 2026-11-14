@@ -65,6 +65,16 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 			if self._auth_notification_sent:
 				self._auth_notification_sent = False
 				_LOGGER.debug("Auth notification flag reset after successful data fetch")
+				# The user signed in again: take the "authentication required"
+				# notification away instead of leaving it behind.
+				try:
+					await self.hass.services.async_call(
+						"persistent_notification",
+						"dismiss",
+						{"notification_id": "familylink_auth_expired"},
+					)
+				except Exception as err:  # pragma: no cover - defensive
+					_LOGGER.debug("Could not dismiss the auth notification: %s", err)
 			self._last_known_data = result  # Store successful result
 			return result
 
@@ -75,7 +85,11 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 				await self._create_auth_notification()
 				raise UpdateFailed("Session expired, please re-authenticate via Family Link Auth add-on") from err
 
-			_LOGGER.warning("Session expired, attempting to refresh authentication")
+			# Once the user has been told (notification + re-auth flow), keep
+			# polling quietly until they sign in instead of logging every poll.
+			(_LOGGER.debug if self._auth_notification_sent else _LOGGER.warning)(
+				"Session expired, attempting to refresh authentication"
+			)
 			self._is_retrying_auth = True
 
 			try:
@@ -90,7 +104,9 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 
 			except SessionExpiredError:
 				# If it still fails after refresh, cookies are truly invalid
-				_LOGGER.error("Session still expired after refresh - please re-authenticate via add-on")
+				(_LOGGER.debug if self._auth_notification_sent else _LOGGER.error)(
+					"Session still expired after refresh - please re-authenticate via add-on"
+				)
 				await self._create_auth_notification()
 				raise UpdateFailed("Session expired, please re-authenticate via Family Link Auth add-on") from err
 			except Exception as retry_err:
@@ -492,7 +508,16 @@ class FamilyLinkDataUpdateCoordinator(DataUpdateCoordinator):
 			await self.client.async_authenticate()
 			_LOGGER.debug("Successfully set up Family Link client")
 
+		except SessionExpiredError as err:
+			# Do not keep a client that never authenticated: the next poll must
+			# try again from scratch. The caller turns this into the one-time
+			# re-authentication prompt, so it is not logged as an error on
+			# every poll.
+			self.client = None
+			_LOGGER.debug("Family Link session is missing or expired: %s", err)
+			raise
 		except Exception as err:
+			self.client = None
 			_LOGGER.error("Failed to setup Family Link client: %s", err)
 			raise
 

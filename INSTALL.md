@@ -122,7 +122,7 @@ The first data fetch runs during setup, so entities appear as soon as the flow c
 
 Sessions expire for two independent reasons, and both land you in the same place:
 
-- **The local lifetime elapsed.** The auth service enforces its `session_duration` option (default 7 days). At that point the stored session is *deleted*, not just flagged, so it cannot be replayed. Nothing renews it automatically, so this is a manual login: raise the option if you are being asked too often, and note that it is read live, so a change also extends the session already stored.
+- **The local lifetime elapsed.** The auth service enforces its `session_duration` option (default 30 days). At that point the stored session is *deleted*, not just flagged, so it cannot be replayed. Nothing renews it automatically, so this is a manual login: raise the option if you are being asked too often, and note that it is read live, so a change also extends the session already stored.
 - **Google invalidated it.** Google can end a session sooner - after a password change, a security review, or a sign-out elsewhere. `session_duration` does not extend Google's own decision.
 
 What happens then:
