@@ -3,7 +3,7 @@ services:
     # Use an immutable, versioned tag. The mutable ":standalone" tag is no
     # longer published: a moving production tag means an unreviewed image can
     # roll out on the next `docker compose pull`.
-    image: ghcr.io/noiwid/familylink-auth:2.0.1-standalone
+    image: ghcr.io/noiwid/familylink-auth:2.1.0-standalone
     # Option 2: Build locally from Dockerfile.standalone
     # build:
     #   context: .
@@ -35,7 +35,7 @@ services:
     environment:
       - LOG_LEVEL=info
       - AUTH_TIMEOUT=300
-      - SESSION_DURATION=604800
+      - SESSION_DURATION=2592000
       - LANGUAGE=en-US
       - TIMEZONE=Europe/Paris
       # "strict" persists only the Google cookies Family Link needs. Switch to

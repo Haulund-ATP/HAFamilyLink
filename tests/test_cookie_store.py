@@ -294,12 +294,12 @@ class TestDurationIsReadLive:
 
 
 class TestDefaultDuration:
-    def test_the_default_is_a_week_not_a_day(self):
+    def test_the_default_is_a_month_not_a_day(self):
         """A 24-hour default meant a daily interactive Google login."""
         from app.config import DEFAULT_SESSION_DURATION, MAX_SESSION_DURATION
 
-        assert DEFAULT_SESSION_DURATION == 604800
-        assert DEFAULT_SESSION_DURATION == MAX_SESSION_DURATION
+        assert DEFAULT_SESSION_DURATION == 2592000
+        assert DEFAULT_SESSION_DURATION <= MAX_SESSION_DURATION
 
     def test_the_addon_option_default_matches(self):
         import json
@@ -311,7 +311,7 @@ class TestDefaultDuration:
                 / "familylink-playwright/config.json"
             ).read_text(encoding="utf-8")
         )
-        assert config["options"]["session_duration"] == 604800
+        assert config["options"]["session_duration"] == 2592000
 
 
 class TestLegacyAndCorruptedEnvelopes:

@@ -27,7 +27,7 @@ services:
     # Pin an explicit version. There is deliberately no mutable ":standalone"
     # tag any more: a moving production tag means an unreviewed image rolls out
     # on the next `docker compose pull`.
-    image: ghcr.io/noiwid/familylink-auth:2.0.1-standalone
+    image: ghcr.io/noiwid/familylink-auth:2.1.0-standalone
     container_name: familylink-auth
     # Reap the display stack's X processes, which are re-parented to PID 1.
     init: true
@@ -48,7 +48,7 @@ services:
     environment:
       - LOG_LEVEL=info
       - AUTH_TIMEOUT=300
-      - SESSION_DURATION=604800
+      - SESSION_DURATION=2592000
       - LANGUAGE=en-US
       - TIMEZONE=Europe/Paris
       - COOKIE_ALLOWLIST_MODE=strict
@@ -85,14 +85,14 @@ docker run -d \
   -v $(pwd)/data:/share/familylink:rw \
   -e LOG_LEVEL=info \
   -e AUTH_TIMEOUT=300 \
-  -e SESSION_DURATION=604800 \
+  -e SESSION_DURATION=2592000 \
   -e LANGUAGE=en-US \
   -e TIMEZONE=Europe/Paris \
   -e COOKIE_ALLOWLIST_MODE=strict \
   --dns 8.8.8.8 \
   --dns 8.8.4.4 \
   --restart unless-stopped \
-  ghcr.io/noiwid/familylink-auth:2.0.1-standalone
+  ghcr.io/noiwid/familylink-auth:2.1.0-standalone
 ```
 
 Both `linux/amd64` and `linux/arm64` are supported; Docker pulls the right image automatically.
@@ -107,7 +107,7 @@ The service runs as a dedicated unprivileged user (`familylink`, uid 1000) insid
 |---|---|---|
 | `LOG_LEVEL` | `info` | Logging level (`debug`, `info`, `warning`, `error`) |
 | `AUTH_TIMEOUT` | `300` | Seconds you have to finish the Google login before the session times out. Clamped to 60–600 |
-| `SESSION_DURATION` | `604800` (7 days) | How long a captured Google session may be used before re-authentication is required. **Enforced** since 2.0.0, and read live so a change also affects the session already stored. Clamped to 3600–604800. A local limit only — Google can invalidate a session sooner, and nothing renews it automatically; see [Cookie expiry](SECURITY.md#cookie-expiry-and-deletion) |
+| `SESSION_DURATION` | `2592000` (30 days) | How long a captured Google session may be used before re-authentication is required. **Enforced** since 2.0.0, and read live so a change also affects the session already stored. Clamped to 3600–31536000. A local limit only — Google can invalidate a session sooner, and nothing renews it automatically; see [Cookie expiry](SECURITY.md#cookie-expiry-and-deletion) |
 | `LANGUAGE` | `en-US` | Browser locale for the Google login pages |
 | `TIMEZONE` | `Europe/Paris` | Container and browser timezone |
 | `COOKIE_ALLOWLIST_MODE` | `strict` | `strict` stores only the Google cookies Family Link needs; `legacy` stores every `google.com` cookie, as 1.x did. See [cookie minimisation](familylink-playwright/DOCS.md#cookie-minimisation) |

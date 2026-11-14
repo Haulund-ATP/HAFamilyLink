@@ -2,6 +2,20 @@
 
 All notable changes to the Google Family Link Auth Add-on will be documented in this file.
 
+## [2.1.0] - 2026-11-14
+
+Fewer interactive logins.
+
+### Changed
+
+- **`session_duration` now defaults to 30 days and accepts up to 365 days** (was 7 days, maximum 7 days). Nothing renews the session automatically, so a weekly cap meant a weekly Google login with 2FA for a session Google itself keeps valid much longer. The stored session picks up the new value at once, because expiry is recomputed on read. Set a shorter value deliberately if you want one.
+
+### Integration (custom_components/familylink)
+
+- When the auth service answers 404 (no stored session, typically because the previous one expired and was deleted) the integration now starts the re-authentication flow and shows the persistent notification, instead of failing silently with a generic error every minute.
+- While waiting for the login, the repeated per-poll warnings and errors are logged at debug level.
+- The notification is dismissed automatically once data flows again.
+
 ## [2.0.1] - 2026-09-08
 
 Fixes a usability regression introduced in 2.0.0, plus the browser-view

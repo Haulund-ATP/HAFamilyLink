@@ -61,7 +61,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # persisted to the data volume; set API_TOKEN to supply your own.
 ENV LOG_LEVEL=info
 ENV AUTH_TIMEOUT=300
-ENV SESSION_DURATION=604800
+ENV SESSION_DURATION=2592000
 ENV COOKIE_ALLOWLIST_MODE=strict
 
 # Set working directory
@@ -111,7 +111,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 LABEL \
     org.opencontainers.image.title="Google Family Link Auth (Standalone)" \
     org.opencontainers.image.description="Standalone authentication service for Google Family Link" \
-    org.opencontainers.image.version="2.0.1" \
+    org.opencontainers.image.version="2.1.0" \
     org.opencontainers.image.source="https://github.com/noiwid/HAFamilyLink"
 
 # The entrypoint starts as root only to prepare the data directory and the

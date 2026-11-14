@@ -5,12 +5,12 @@ import os
 
 from pydantic import BaseModel
 
-# Bounds mirrored from the add-on schema (``int(3600,604800)``) so the
+# Bounds mirrored from the add-on schema (``int(3600,31536000)``) so the
 # standalone container, which has no Supervisor to validate its options,
 # enforces exactly the same limits.
 MIN_SESSION_DURATION = 3600
-MAX_SESSION_DURATION = 604800
-# Seven days, the documented maximum.
+MAX_SESSION_DURATION = 31536000  # 365 days
+# Thirty days by default (maximum 365).
 #
 # This deliberately defaults to the longest allowed lifetime. Renewing the
 # session is not automatic - it needs a person to complete a Google login with
@@ -19,8 +19,9 @@ MAX_SESSION_DURATION = 604800
 # control that actually matters here; this setting only bounds how long *this*
 # project will keep replaying a session it already holds.
 #
-# It was 86400 in 2.0.0, which meant a daily interactive re-login.
-DEFAULT_SESSION_DURATION = 604800
+# It was 86400 in 2.0.0 (daily re-login) and 604800 in 2.0.1 (weekly), still a
+# manual login every week for a session Google keeps valid far longer.
+DEFAULT_SESSION_DURATION = 2592000
 
 MIN_AUTH_TIMEOUT = 60
 MAX_AUTH_TIMEOUT = 600

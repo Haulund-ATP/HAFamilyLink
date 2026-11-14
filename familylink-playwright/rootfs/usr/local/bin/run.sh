@@ -8,7 +8,7 @@ bashio::log.info "Starting Google Family Link Auth Service..."
 # Read configuration from Home Assistant
 LOG_LEVEL=$(bashio::config 'log_level' 'info')
 AUTH_TIMEOUT=$(bashio::config 'auth_timeout' '300')
-SESSION_DURATION=$(bashio::config 'session_duration' '86400')
+SESSION_DURATION=$(bashio::config 'session_duration' '2592000')
 LANGUAGE=$(bashio::config 'language' '')
 TIMEZONE=$(bashio::config 'timezone' '')
 COOKIE_ALLOWLIST_MODE=$(bashio::config 'cookie_allowlist_mode' 'strict')

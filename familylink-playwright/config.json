@@ -1,6 +1,6 @@
 {
   "name": "Google Family Link Auth",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "slug": "familylink-playwright",
   "description": "Authentication service for Google Family Link integration using browser automation",
   "url": "https://github.com/noiwid/HAFamilyLink",
@@ -28,7 +28,7 @@
   "options": {
     "log_level": "info",
     "auth_timeout": 300,
-    "session_duration": 604800,
+    "session_duration": 2592000,
     "language": "",
     "timezone": "",
     "cookie_allowlist_mode": "strict"
@@ -36,7 +36,7 @@
   "schema": {
     "log_level": "list(trace|debug|info|warning|error)?",
     "auth_timeout": "int(60,600)?",
-    "session_duration": "int(3600,604800)?",
+    "session_duration": "int(3600,31536000)?",
     "language": "str?",
     "timezone": "str?",
     "cookie_allowlist_mode": "list(strict|legacy)?",

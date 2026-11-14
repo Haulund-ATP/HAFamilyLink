@@ -52,7 +52,7 @@ class TestAddonSchema:
             assert option in CONFIG["schema"], option
 
     def test_session_duration_bounds_are_validated(self):
-        assert CONFIG["schema"]["session_duration"] == "int(3600,604800)?"
+        assert CONFIG["schema"]["session_duration"] == "int(3600,31536000)?"
 
     def test_auth_timeout_bounds_are_validated(self):
         assert CONFIG["schema"]["auth_timeout"] == "int(60,600)?"

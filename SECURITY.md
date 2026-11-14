@@ -187,10 +187,10 @@ Consequences worth acting on:
 
 ## Cookie expiry and deletion
 
-The `session_duration` option (default 7 days, range 1 hour to 7 days) is
+The `session_duration` option (default 30 days, range 1 hour to 365 days) is
 enforced, not merely documented.
 
-The default is deliberately the maximum. There is no automatic renewal: a new
+The default (30 days) is deliberately long. There is no automatic renewal: a new
 session requires a person to complete a Google login with two-factor
 authentication in the add-on's browser. A short local lifetime therefore buys
 very little - it does not reduce what a stolen session can do, only how long
@@ -222,8 +222,8 @@ Two different expiries are at play, and only one of them is ours:
   does — invalidate a session earlier, for example after a password change, a
   security review or a sign-out elsewhere. A session that has not reached its
   local expiry can still stop working, which surfaces as HTTP 401 and the same
-  re-authentication prompt. Setting `session_duration` to seven days does not
-  make Google honour a session for seven days.
+  re-authentication prompt. Setting `session_duration` to 30 days does not
+  make Google honour a session for 30 days.
 
 To delete the stored session yourself, use the add-on API
 (`DELETE /api/cookies`) or delete `/share/familylink/cookies.enc`.

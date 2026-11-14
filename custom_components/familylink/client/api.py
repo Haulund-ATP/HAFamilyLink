@@ -126,6 +126,18 @@ class FamilyLinkClient:
 					"in the api_key file of the data directory. Do not put it in "
 					"the URL."
 				)
+			if getattr(self.addon_client, "last_fetch_status", None) == 404:
+				# The auth service is up and answering, it just holds no
+				# session: it expired earlier and was deleted, or nobody has
+				# signed in yet. Either way the fix is an interactive login,
+				# so raise the re-authentication error (repair prompt and
+				# notification) instead of a generic failure retried every
+				# poll.
+				raise SessionExpiredError(
+					"The auth service holds no Google session (it expired and "
+					"was deleted, or no one has signed in yet). Sign in again "
+					"through the Family Link Auth add-on."
+				)
 			raise AuthenticationError(
 				"No cookies found. Please use the Family Link Auth add-on to authenticate first."
 			)
